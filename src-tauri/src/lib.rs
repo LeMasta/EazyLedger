@@ -61,6 +61,7 @@ struct DocumentItem {
     relative_path: String,
     notes: String,
     tags: Vec<TagItem>,
+    expires_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -98,6 +99,9 @@ pub fn run() {
             let default_vault_path = app_data_path.join("vault");
             let vault_path = read_configured_vault(&config_path).unwrap_or(default_vault_path);
             initialize_vault(&vault_path).map_err(std::io::Error::other)?;
+            app.asset_protocol_scope()
+                .allow_directory(&vault_path, true)
+                .map_err(std::io::Error::other)?;
             let watcher = start_watcher(vault_path.clone()).map_err(std::io::Error::other)?;
             app.manage(AppState { vault_path, config_path });
             let watcher_state = app.state::<WatcherState>();
@@ -124,6 +128,7 @@ pub fn run() {
             add_tags_to_documents,
             remove_tags_from_documents,
             update_notes,
+            update_expiry,
             rename_document,
             move_documents,
             copy_documents,
@@ -194,10 +199,24 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_documents_name ON documents(display_name);
         CREATE INDEX IF NOT EXISTS idx_documents_modified ON documents(modified_at DESC);"
     ).map_err(|error| error.to_string())?;
+    ensure_document_expiry_column(&connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO nodes(id, parent_id, name, sort_order, created_at) VALUES(?1, NULL, '全部资料', 0, ?2)",
         params![ROOT_NODE_ID, now_ms()],
     ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn ensure_document_expiry_column(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection.prepare("PRAGMA table_info(documents)").map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if !columns.iter().any(|column| column == "expires_at") {
+        connection.execute("ALTER TABLE documents ADD COLUMN expires_at INTEGER", []).map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -575,6 +594,14 @@ fn update_notes(document_id: String, notes: String, state: State<AppState>) -> R
 }
 
 #[tauri::command]
+fn update_expiry(document_id: String, expires_at: Option<i64>, state: State<AppState>) -> Result<(), String> {
+    open_db(&state.vault_path)?
+        .execute("UPDATE documents SET expires_at=?1 WHERE id=?2", params![expires_at, document_id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn rename_document(id: String, name: String, state: State<AppState>) -> Result<(), String> {
     validate_file_name(&name)?;
     let connection = open_db(&state.vault_path)?;
@@ -618,10 +645,10 @@ fn copy_documents(ids: Vec<String>, node_id: String, state: State<AppState>) -> 
 }
 
 fn copy_document_internal(connection: &Connection, vault: &Path, source_id: &str, target_node_id: &str) -> Result<String, String> {
-    let (name, extension, relative, size, modified, content, notes): (String, String, String, i64, i64, String, String) = connection.query_row(
-        "SELECT display_name, extension, relative_path, size, modified_at, content_text, notes FROM documents WHERE id=?1",
+    let (name, extension, relative, size, modified, content, notes, expires_at): (String, String, String, i64, i64, String, String, Option<i64>) = connection.query_row(
+        "SELECT display_name, extension, relative_path, size, modified_at, content_text, notes, expires_at FROM documents WHERE id=?1",
         [source_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
     ).map_err(|error| error.to_string())?;
     let new_id = Uuid::new_v4().to_string();
     let new_name = copy_name(&name);
@@ -631,8 +658,8 @@ fn copy_document_internal(connection: &Connection, vault: &Path, source_id: &str
     fs::copy(vault.join(&relative), &destination).map_err(|error| error.to_string())?;
     let new_relative = destination.strip_prefix(vault).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
     connection.execute(
-        "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![&new_id, target_node_id, new_name, extension, new_relative, size, modified, content, notes, now_ms()],
+        "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at, expires_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![&new_id, target_node_id, new_name, extension, new_relative, size, modified, content, notes, now_ms(), expires_at],
     ).map_err(|error| error.to_string())?;
     connection.execute(
         "INSERT INTO document_tags(document_id, tag_id) SELECT ?1, tag_id FROM document_tags WHERE document_id=?2",
@@ -740,12 +767,12 @@ fn load_tags(connection: &Connection) -> Result<Vec<TagItem>, String> {
 
 fn load_documents(connection: &Connection) -> Result<Vec<DocumentItem>, String> {
     let mut statement = connection.prepare(
-        "SELECT id, node_id, display_name, extension, size, modified_at, relative_path, notes FROM documents ORDER BY modified_at DESC"
+        "SELECT id, node_id, display_name, extension, size, modified_at, relative_path, notes, expires_at FROM documents ORDER BY modified_at DESC"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?))).map_err(|error| error.to_string())?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, Option<i64>>(8)?))).map_err(|error| error.to_string())?;
     let raw = rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-    raw.into_iter().map(|(id, node_id, name, extension, size, modified_at, relative_path, notes)| {
-        Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes })
+    raw.into_iter().map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at)| {
+        Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at })
     }).collect()
 }
 
