@@ -352,6 +352,63 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .expiry-reminder em.today { color: #c23d16; font-weight: 700; }
 .expiry-reminder em.due-soon { color: #a96008; font-weight: 700; }
 .expiry-reminder footer { padding: 7px 12px; border-top: 1px solid #f0d9b2; color: #846f54; font-size: 10px; }
+
+/* v0.4.3: persistent expiry center, card-style tree controls and rich preview tools */
+.notification-button { position: relative; }
+.notification-button.has-alerts { color: #a14b08; background: #fff6e6; }
+.notification-button > span { position: absolute; top: 0; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border: 2px solid white; border-radius: 9px; background: #db3b35; color: white; font-size: 8px; font-weight: 700; }
+
+.home-ledger-tree { position: relative; min-height: 116px; padding-top: 76px; }
+.home-tree-controls { position: absolute; top: 14px; right: 14px; z-index: 2; display: flex; align-items: stretch; gap: 7px; }
+.home-tree-controls button, .home-tree-controls label { height: 48px; min-width: 112px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 9px; box-shadow: 0 3px 10px #26364d16; font-size: 10px; cursor: pointer; }
+.home-tree-controls button > span, .home-tree-controls label > span { display: grid; gap: 1px; text-align: left; }
+.home-tree-controls strong { font-size: 11px; }
+.home-tree-controls small { opacity: .72; font-size: 8px; font-weight: 400; }
+.home-tree-controls .expand { color: #17599f; background: linear-gradient(135deg, #e4f2ff, #cfe7ff); }
+.home-tree-controls .collapse { color: #6542a5; background: linear-gradient(135deg, #f1eaff, #e3d8ff); }
+.home-tree-controls .depth { color: #98600a; background: linear-gradient(135deg, #fff3d8, #ffe6b0); }
+.home-tree-controls select { width: 55px; height: 30px; padding: 0 4px; border: 1px solid #dba94e66; border-radius: 6px; outline: 0; background: #fffaf0; color: #7c4d08; font-size: 9px; }
+
+.expiry-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.expiry-overview-card { overflow: hidden; border: 1px solid #e0e5ec; border-radius: 10px; background: white; box-shadow: 0 2px 7px #2c40520a; }
+.expiry-overview-card > header { height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; }
+.expiry-overview-card > header span { display: flex; align-items: center; gap: 7px; }
+.expiry-overview-card > header b { min-width: 26px; height: 26px; display: grid; place-items: center; border-radius: 13px; font-size: 11px; }
+.expiry-overview-card.expired > header { color: #a72a2a; background: #fff0f0; }
+.expiry-overview-card.expired > header b { background: #ffd8d8; }
+.expiry-overview-card.due-soon > header { color: #9b620b; background: #fff7e8; }
+.expiry-overview-card.due-soon > header b { background: #ffe6b8; }
+.expiry-overview-card > div { max-height: 264px; overflow-y: auto; padding: 5px; }
+.expiry-overview-card > div > button { width: 100%; min-height: 51px; padding: 6px 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.expiry-overview-card > div > button:hover { background: #f4f7fb; }
+.expiry-overview-card > div > button > span { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.expiry-overview-card > div > button strong, .expiry-overview-card > div > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.expiry-overview-card > div > button strong { font-size: 11px; }
+.expiry-overview-card > div > button small { color: #7c8795; font-size: 9px; }
+.expiry-overview-card > div > p { margin: 0; padding: 22px; color: #929ca9; text-align: center; font-size: 11px; }
+
+.preview-stage { position: relative; }
+.preview-stage .preview-box { margin-top: 48px; }
+.preview-toolbar { position: absolute; z-index: 4; top: 8px; left: 12px; right: 12px; height: 32px; padding: 3px; display: flex; align-items: center; gap: 2px; border: 1px solid #dce2ea; border-radius: 7px; background: #fff; box-shadow: 0 2px 8px #1d2b4012; }
+.preview-toolbar > span { width: 1px; height: 18px; margin: 0 3px; background: #dfe4ea; }
+.preview-toolbar button { width: 27px; height: 26px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: #536273; }
+.preview-toolbar button:hover:not(:disabled) { color: #1759a8; background: #eaf2fd; }
+.preview-toolbar button:disabled { opacity: .35; }
+.preview-toolbar .zoom-value { width: 42px; font-size: 9px; }
+.preview-toolbar button:last-child { margin-left: auto; }
+.preview-media-transform { width: 100%; height: 100%; display: grid; place-items: center; transform-origin: center; transition: transform .18s ease; }
+.preview-media-transform img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.preview-media-transform iframe { width: 100%; height: 100%; border: 0; background: white; }
+.preview-fullscreen { position: fixed; inset: 0; z-index: 150; padding: 24px; background: #111827e8; backdrop-filter: blur(5px); }
+.preview-fullscreen > div { width: 100%; height: 100%; display: grid; grid-template-rows: 52px minmax(0, 1fr); overflow: hidden; border-radius: 12px; background: #f4f6f9; box-shadow: 0 24px 80px #0007; }
+.preview-fullscreen header { padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d9dee6; background: white; }
+.preview-fullscreen header > div { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.preview-fullscreen header span { min-width: 0; display: grid; gap: 2px; }
+.preview-fullscreen header strong { max-width: 55vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.preview-fullscreen header small { color: #87919f; font-size: 9px; }
+.preview-fullscreen .preview-toolbar { position: static; width: auto; min-width: 260px; box-shadow: none; }
+.preview-fullscreen .preview-box { width: auto; height: auto; margin: 14px; border-radius: 9px; }
+
 .toast { position: fixed; right: 18px; bottom: 18px; z-index: 50; max-width: 420px; padding: 10px 12px; border-radius: 7px; background: #2d333d; color: white; display: flex; align-items: center; gap: 10px; font-size: 12px; box-shadow: 0 8px 24px #0003; }
 .splash { height: 100vh; display: grid; place-items: center; color: #697483; background: #f5f7fa; }
 
