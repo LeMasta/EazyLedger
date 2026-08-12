@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight,
+  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Check, CheckSquare, ChevronDown, ChevronRight,
   ClipboardPaste, Copy, Download, File, FileImage, FilePlus2, FileText, Folder, FolderInput,
   FolderOpen, FolderPlus, HardDrive, Image, Import, MoreHorizontal, PanelRightClose,
   PanelRightOpen, Pencil, Plus, RefreshCw, Scissors, Search, Star, Tags, Trash2, X, House, Files, Settings, Database,
