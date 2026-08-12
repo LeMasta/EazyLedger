@@ -487,7 +487,7 @@ export default function App() {
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {externalDragging && <div className="drop-overlay"><Import size={46} /><strong>释放鼠标，导入到“{activeTab.title}”</strong><span>文件夹层级会自动创建为台账树</span></div>}
     {!expiryReminderDismissed && expiryAlerts.length > 0 && <aside className="expiry-reminder"><header><AlertTriangle size={19} /><div><strong>有效期提醒</strong><small>{expiryAlerts.filter((item) => item.expiry.days < 0).length} 份已过期，{expiryAlerts.filter((item) => item.expiry.days >= 0).length} 份将在 30 天内到期</small></div><button onClick={() => setExpiryReminderDismissed(true)} title="关闭提醒"><X size={15} /></button></header><div>{expiryAlerts.slice(0, 5).map(({ document, expiry }) => <button key={document.id} onClick={() => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); setExpiryReminderDismissed(true); }}><span>{document.name}</span><em className={expiry.kind}>{expiry.label}</em></button>)}</div>{expiryAlerts.length > 5 && <footer>另有 {expiryAlerts.length - 5} 份资料需要关注</footer>}</aside>}
-    {loading && <div className="progress-line" />
+    {loading && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
   </main>;
 }
