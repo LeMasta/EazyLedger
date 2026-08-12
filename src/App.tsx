@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Check, CheckSquare, ChevronDown, ChevronRight,
+  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight,
   ClipboardPaste, Copy, Download, File, FileImage, FilePlus2, FileText, Folder, FolderInput,
   FolderOpen, FolderPlus, HardDrive, Image, Import, MoreHorizontal, PanelRightClose,
   PanelRightOpen, Pencil, Plus, RefreshCw, Scissors, Search, Star, Tags, Trash2, X, House, Files, Settings, Database,
@@ -17,6 +17,7 @@ const tagColors = ["#4f7cff", "#a855f7", "#f59e0b", "#10b981", "#ef4444", "#06b6
 type ClipboardState = { mode: "copy" | "cut"; ids: string[] } | null;
 type ContextMenuState = { x: number; y: number; documentId: string } | null;
 type TagMenuState = { x: number; y: number; documentIds: string[]; sourceTagId?: string } | null;
+type ExpiryMenuState = { x: number; y: number; documentId: string } | null;
 type TagEditorState = { mode: "create" | "edit"; tag?: Tag; documentIds: string[] } | null;
 type SortKey = "name" | "modified" | "size";
 type UpdateUiState = {
@@ -40,13 +41,15 @@ export default function App() {
   const [clipboard, setClipboard] = useState<ClipboardState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [tagMenu, setTagMenu] = useState<TagMenuState>(null);
+  const [expiryMenu, setExpiryMenu] = useState<ExpiryMenuState>(null);
   const [tagEditor, setTagEditor] = useState<TagEditorState>(null);
+  const [searchTagIds, setSearchTagIds] = useState<string[]>([]);
   const [batchNodeId, setBatchNodeId] = useState("root");
   const [batchTagId, setBatchTagId] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("modified");
   const [sortAscending, setSortAscending] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.4.1");
+  const [appVersion, setAppVersion] = useState("0.4.2");
   const [expiryReminderDismissed, setExpiryReminderDismissed] = useState(false);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
   const lastSelectedIndex = useRef<number | null>(null);
@@ -71,9 +74,10 @@ export default function App() {
 
   const refreshDocuments = useCallback(async (tab: AppTab) => {
     const next = await api.search(tab.query, tab.nodeId, tab.tagId);
-    setDocuments(next);
-    setSelectedIds((current) => new Set([...current].filter((id) => next.some((item) => item.id === id))));
-  }, []);
+    const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
+    setDocuments(filtered);
+    setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
+  }, [searchTagIds]);
 
   const refreshAll = useCallback(async () => {
     await refreshBootstrap();
@@ -153,7 +157,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem("document-ledger.preview-open", String(previewOpen)); }, [previewOpen]);
 
   useEffect(() => {
-    const close = () => { setContextMenu(null); setTagMenu(null); };
+    const close = () => { setContextMenu(null); setTagMenu(null); setExpiryMenu(null); };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
   }, []);
@@ -180,6 +184,7 @@ export default function App() {
 
   function selectNode(node: NodeItem) {
     setTagMenu(null);
+    setSearchTagIds([]);
     updateActive({ title: node.name, view: "files", nodeId: node.id, tagId: null, query: "" });
     setBatchNodeId(node.id);
     setSelectedIds(new Set());
@@ -187,6 +192,7 @@ export default function App() {
 
   function selectTag(tag: Tag) {
     setTagMenu(null);
+    setSearchTagIds([]);
     updateActive({ title: `# ${tag.name}`, view: "files", nodeId: null, tagId: tag.id, query: "" });
     setSelectedIds(new Set());
   }
@@ -233,7 +239,12 @@ export default function App() {
     setTagEditor({ mode: "create", documentIds });
   }
 
-  function goHome() { updateActive({ ...initialTab, id: activeTabId }); setSelectedIds(new Set()); }
+  function goHome() { updateActive({ ...initialTab, id: activeTabId }); setSearchTagIds([]); setSelectedIds(new Set()); }
+
+  function toggleSearchTag(tagId: string) {
+    setSearchTagIds((current) => current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId]);
+    if (activeTab.view !== "files") updateActive({ view: "files", title: "搜索" });
+  }
 
   function openSettings() { updateActive({ title: "设置", view: "settings", nodeId: null, tagId: null, query: "" }); setSelectedIds(new Set()); }
 
@@ -271,8 +282,10 @@ export default function App() {
   function handleDragStart(event: DragEvent, document: DocumentItem) {
     const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id];
     if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id]));
-    event.dataTransfer.setData("application/x-document-ids", JSON.stringify(ids));
-    event.dataTransfer.effectAllowed = "copyMove";
+    const payload = JSON.stringify(ids);
+    event.dataTransfer.setData("application/x-document-ids", payload);
+    event.dataTransfer.setData("text/plain", `eazyledger:${payload}`);
+    event.dataTransfer.effectAllowed = "move";
   }
 
   async function moveFiles(ids: string[], nodeId: string) {
@@ -394,6 +407,14 @@ export default function App() {
     await runAction(async () => { await api.deleteTag(tag.id); await refreshAll(); });
   }
 
+  async function updateDocumentExpiry(documentId: string, expiresAt: number | null) {
+    await runAction(async () => {
+      await api.updateExpiry(documentId, expiresAt);
+      setExpiryMenu(null);
+      await refreshAll();
+    });
+  }
+
   function setSort(next: SortKey) {
     if (next === sortKey) setSortAscending((value) => !value);
     else { setSortKey(next); setSortAscending(true); }
@@ -411,7 +432,7 @@ export default function App() {
     <section className="toolbar">
       <div className="nav-buttons"><button onClick={goHome} disabled={activeTab.view === "home"} title="主页"><ArrowLeft size={18} /></button><button onClick={goUp} disabled={activeTab.view === "home"} title="上一级"><ArrowUp size={18} /></button><button title="刷新" onClick={() => void refreshAll()}><RefreshCw size={17} /></button></div>
       <div className="address-bar"><button className="home-crumb" onClick={goHome}><House size={16} />主页</button>{breadcrumb.map((part) => <span className="crumb" key={part.id} onClick={() => selectNode(part)}><ChevronRight size={14} />{part.name}</span>)}{activeTab.tagId && <span className="crumb"><ChevronRight size={14} />{activeTab.title}</span>}</div>
-      <label className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateActive({ view: event.target.value ? "files" : activeTab.view, title: event.target.value ? "搜索" : activeTab.title, query: event.target.value })} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}</label>
+      <div className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateActive({ view: event.target.value || searchTagIds.length ? "files" : activeTab.view, title: event.target.value ? "搜索" : activeTab.title, query: event.target.value })} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}<SearchTagFilter tags={data.tags} selectedIds={searchTagIds} disabled={activeTab.view === "settings"} onToggle={toggleSearchTag} onClear={() => setSearchTagIds([])} /></div>
     </section>
     <section className="commandbar">
       <button className="primary" onClick={() => void chooseImport()}><Import size={16} />导入资料</button>
@@ -458,7 +479,7 @@ export default function App() {
         </div>}
         <div className="list-header">
           <input type="checkbox" checked={documents.length > 0 && selectedIds.size === documents.length} onChange={(event) => setSelectedIds(event.target.checked ? new Set(documents.map((item) => item.id)) : new Set())} />
-          <button onClick={() => setSort("name")}>名称和标签 <ArrowDownAZ size={13} /></button><button onClick={() => setSort("modified")}>修改日期</button><span>有效期</span><button onClick={() => setSort("size")}>大小</button>
+          <button onClick={() => setSort("name")}>名称、标签和有效期 <ArrowDownAZ size={13} /></button><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button>
         </div>
         <div className="file-list custom-scrollbar">
           {sortedDocuments.map((document, index) => {
@@ -470,9 +491,8 @@ export default function App() {
               onContextMenu={(event) => { event.preventDefault(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); setContextMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}
             >
               <input type="checkbox" checked={selectedIds.has(document.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleDocumentSelection(document.id, index)} aria-label={`选择 ${document.name}`} />
-              <span className="file-name"><FileIcon extension={document.extension} /><span><span className="file-title-line"><strong>{document.name}</strong>{document.tags.map((tag) => <button className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}<button className="add-tag-chip" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={11} />标签</button></span><small>{document.extension.toUpperCase()} 文件</small></span></span>
+              <span className="file-name"><FileIcon extension={document.extension} /><span><span className="file-title-line"><strong>{document.name}</strong>{document.tags.map((tag) => <button className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}<button className="add-tag-chip" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={11} />标签</button></span><small>{document.extension.toUpperCase()} 文件{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}</small></span></span>
               <span>{formatDate(document.modifiedAt)}</span>
-              <span className={`expiry-cell ${expiry?.kind ?? ""}`}>{expiry?.label ?? "未设置"}</span>
               <span>{formatSize(document.size)}</span><button className="row-more" title="文件操作" onClick={(event) => { event.stopPropagation(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({ x: rect.right - 225, y: rect.bottom + 2, documentId: document.id }); }}><MoreHorizontal size={17} /></button>
             </div>;
           })}
@@ -482,9 +502,10 @@ export default function App() {
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
-    {contextMenu && <FileContextMenu menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => void api.openDocument(contextMenu.documentId)} onReveal={() => void api.revealDocument(contextMenu.documentId)} onCopy={() => setClipboard({ mode: "copy", ids: [...selectedIds] })} onCut={() => setClipboard({ mode: "cut", ids: [...selectedIds] })} onRename={() => void renameSelected()} onDelete={() => void deleteSelected()} />}
+    {contextMenu && <FileContextMenu menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => void api.openDocument(contextMenu.documentId)} onReveal={() => void api.revealDocument(contextMenu.documentId)} onCopy={() => setClipboard({ mode: "copy", ids: [...selectedIds] })} onCut={() => setClipboard({ mode: "cut", ids: [...selectedIds] })} onRename={() => void renameSelected()} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onDelete={() => void deleteSelected()} />}
     {tagMenu && <TagBubbleMenu menu={tagMenu} documents={documents} tags={data.tags} onToggle={(tag) => void toggleTagForDocuments(tag, tagMenu.documentIds)} onEdit={(tag) => { setTagMenu(null); editTag(tag); }} onCreate={() => { const ids = tagMenu.documentIds; setTagMenu(null); addTag(ids); }} onOpenTag={(tag) => { setTagMenu(null); selectTag(tag); }} />}
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
+    {expiryMenu && <ExpiryBubbleMenu menu={expiryMenu} document={documents.find((item) => item.id === expiryMenu.documentId)} onSave={(expiresAt) => void updateDocumentExpiry(expiryMenu.documentId, expiresAt)} />}
     {externalDragging && <div className="drop-overlay"><Import size={46} /><strong>释放鼠标，导入到“{activeTab.title}”</strong><span>文件夹层级会自动创建为台账树</span></div>}
     {!expiryReminderDismissed && expiryAlerts.length > 0 && <aside className="expiry-reminder"><header><AlertTriangle size={19} /><div><strong>有效期提醒</strong><small>{expiryAlerts.filter((item) => item.expiry.days < 0).length} 份已过期，{expiryAlerts.filter((item) => item.expiry.days >= 0).length} 份将在 30 天内到期</small></div><button onClick={() => setExpiryReminderDismissed(true)} title="关闭提醒"><X size={15} /></button></header><div>{expiryAlerts.slice(0, 5).map(({ document, expiry }) => <button key={document.id} onClick={() => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); setExpiryReminderDismissed(true); }}><span>{document.name}</span><em className={expiry.kind}>{expiry.label}</em></button>)}</div>{expiryAlerts.length > 5 && <footer>另有 {expiryAlerts.length - 5} 份资料需要关注</footer>}</aside>}
     {loading && <div className="progress-line" />}
@@ -498,9 +519,29 @@ function CommandMenu({ children }: { children: ReactNode }) {
   return <details className="command-menu"><summary title="更多操作"><MoreHorizontal size={18} /></summary><div>{children}</div></details>;
 }
 
-function FileContextMenu({ menu, document, onOpen, onReveal, onCopy, onCut, onRename, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onDelete: () => void }) {
+function FileContextMenu({ menu, document, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onDelete: () => void }) {
   return <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
-    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />移入应用回收站</button>
+    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />移入应用回收站</button>
+  </div>;
+}
+
+function SearchTagFilter({ tags, selectedIds, disabled, onToggle, onClear }: { tags: Tag[]; selectedIds: string[]; disabled: boolean; onToggle: (tagId: string) => void; onClear: () => void }) {
+  return <details className="search-tag-filter">
+    <summary className={selectedIds.length ? "active" : ""} aria-label="按标签筛选" onClick={(event) => disabled && event.preventDefault()}><Tags size={14} /><span>{selectedIds.length ? `${selectedIds.length} 个标签` : "标签"}</span><ChevronDown size={12} /></summary>
+    <div className="search-tag-popover" onClick={(event) => event.stopPropagation()}><header><strong>同时包含以下标签</strong>{selectedIds.length > 0 && <button onClick={onClear}>清除</button>}</header><div>{tags.map((tag) => <label className={selectedIds.includes(tag.id) ? "selected" : ""} key={tag.id}><input type="checkbox" checked={selectedIds.includes(tag.id)} onChange={() => onToggle(tag.id)} /><span className="tag-dot" style={{ background: tag.color }} /><span>{tag.name}</span><small>{tag.documentCount}</small></label>)}{tags.length === 0 && <p>还没有标签</p>}</div><footer>标签之间为“且”，并与关键字共同筛选</footer></div>
+  </details>;
+}
+
+function ExpiryBubbleMenu({ menu, document, onSave }: { menu: ExpiryMenuState & {}; document?: DocumentItem; onSave: (expiresAt: number | null) => void }) {
+  const [value, setValue] = useState(formatDateInput(document?.expiresAt ?? null));
+  const state = expiryState(document?.expiresAt ?? null);
+  const applyDays = (days: number) => { const date = new Date(); date.setDate(date.getDate() + days); date.setHours(23, 59, 59, 999); onSave(date.getTime()); };
+  return <div className="context-menu expiry-bubble-menu" style={{ left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y + 8, window.innerHeight - 300) }} onClick={(event) => event.stopPropagation()}>
+    <header>{document?.name ?? "设置有效期"}</header>{state && <div className={`expiry-menu-current ${state.kind}`}><CalendarClock size={15} /><strong>{state.label}</strong></div>}
+    <label>到期日期<input autoFocus type="date" value={value} onChange={(event) => setValue(event.target.value)} /></label>
+    <div className="expiry-quick"><button onClick={() => applyDays(7)}>7 天后</button><button onClick={() => applyDays(30)}>30 天后</button><button onClick={() => applyDays(90)}>90 天后</button></div>
+    <button className="expiry-apply" disabled={!value} onClick={() => value && onSave(new Date(`${value}T23:59:59`).getTime())}><Check size={14} />应用日期</button>
+    {document?.expiresAt && <><hr /><button className="danger" onClick={() => onSave(null)}><X size={14} />清除有效期</button></>}
   </div>;
 }
 
@@ -533,21 +574,25 @@ function TagEditorModal({ state, suggestedColor, onCancel, onSave }: { state: Ta
 
 function HomeView({ data, recentDocuments, onOpenNode, onOpenTag, onOpenDocument, onTagMenu }: { data: BootstrapData; recentDocuments: DocumentItem[]; onOpenNode: (node: NodeItem) => void; onOpenTag: (tag: Tag) => void; onOpenDocument: (document: DocumentItem) => void; onTagMenu: (event: ReactMouseEvent, tag: Tag) => void }) {
   const root = data.nodes.find((node) => node.parentId === null);
+  const maxDepth = useMemo(() => Math.max(0, ...data.nodes.map((node) => nodeDepth(node, data.nodes))), [data.nodes]);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(data.nodes.filter((node) => nodeDepth(node, data.nodes) < 2).map((node) => node.id)));
+  const expandToDepth = (depth: number) => setExpandedIds(new Set(data.nodes.filter((node) => nodeDepth(node, data.nodes) < depth).map((node) => node.id)));
   return <section className="home-view custom-scrollbar">
     <div className="home-heading"><div><h1>资料台账</h1><p>从完整台账层级、标签或最近资料开始</p></div><div className="home-stats"><span><strong>{data.documents.length}</strong> 份资料</span><span><strong>{data.nodes.length - 1}</strong> 个节点</span><span><strong>{data.tags.length}</strong> 个标签</span></div></div>
-    <section className="home-section"><header><h2>台账架构</h2><button onClick={() => root && onOpenNode(root)}>查看全部 <ChevronRight size={15} /></button></header><div className="home-ledger-tree">
-      {root ? <HomeTreeNode node={root} nodes={data.nodes} onOpen={onOpenNode} /> : <div className="home-tree-empty"><FolderPlus size={28} /><span>尚未创建台账根节点</span></div>}
+    <section className="home-section"><header><h2>台账架构</h2><div className="home-tree-controls"><button onClick={() => setExpandedIds(new Set(data.nodes.map((node) => node.id)))}><ChevronDown size={14} />全部展开</button><button onClick={() => setExpandedIds(new Set())}><ChevronRight size={14} />全部收起</button><label>展开至<select value="" onChange={(event) => { if (event.target.value) expandToDepth(Number(event.target.value)); }}><option value="" disabled>层级…</option>{Array.from({ length: maxDepth + 1 }, (_, index) => <option value={index + 1} key={index + 1}>第 {index + 1} 层</option>)}</select></label><button onClick={() => root && onOpenNode(root)}>查看全部 <ChevronRight size={15} /></button></div></header><div className="home-ledger-tree">
+      {root ? <HomeTreeNode node={root} nodes={data.nodes} onOpen={onOpenNode} expandedIds={expandedIds} onToggle={(nodeId) => setExpandedIds((current) => { const next = new Set(current); next.has(nodeId) ? next.delete(nodeId) : next.add(nodeId); return next; })} /> : <div className="home-tree-empty"><FolderPlus size={28} /><span>尚未创建台账根节点</span></div>}
     </div></section>
     <section className="home-section"><header><h2>标签</h2><span>单击筛选，右侧按钮管理</span></header><div className="home-tags">{data.tags.map((tag) => <span className="home-tag-wrap" key={tag.id}><button className="home-tag" style={{ "--tag-color": tag.color } as CSSProperties} onClick={() => onOpenTag(tag)}><span className="tag-dot" style={{ background: tag.color }} />{tag.name}<small>{tag.documentCount}</small></button><button className="home-tag-menu" onClick={(event) => onTagMenu(event, tag)}><MoreHorizontal size={14} /></button></span>)}</div></section>
     <section className="home-section"><header><h2>最近资料</h2><span>按修改时间排序</span></header><div className="recent-grid">{recentDocuments.map((document) => { const expiry = expiryState(document.expiresAt); return <button key={document.id} className={`recent-card ${expiry?.kind ?? ""}`} onClick={() => onOpenDocument(document)}><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>{formatDate(document.modifiedAt, true)} · {formatSize(document.size)}</small><span className="recent-tags">{document.tags.slice(0, 4).map((tag) => <i className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id}>{tag.name}</i>)}{expiry && <i className={`expiry-badge ${expiry.kind}`}>{expiry.label}</i>}</span></span></button>; })}</div></section>
   </section>;
 }
 
-function HomeTreeNode({ node, nodes, onOpen }: { node: NodeItem; nodes: NodeItem[]; onOpen: (node: NodeItem) => void }) {
+function HomeTreeNode({ node, nodes, onOpen, expandedIds, onToggle }: { node: NodeItem; nodes: NodeItem[]; onOpen: (node: NodeItem) => void; expandedIds: Set<string>; onToggle: (nodeId: string) => void }) {
   const children = nodes.filter((candidate) => candidate.parentId === node.id).sort((a, b) => a.sortOrder - b.sortOrder);
+  const expanded = expandedIds.has(node.id);
   return <div className="home-tree-node">
-    <button onClick={() => onOpen(node)}><span className="home-tree-icon"><FolderOpen size={19} /></span><span><strong>{node.name}</strong><small>{node.documentCount} 份资料</small></span><ChevronRight size={16} /></button>
-    {children.length > 0 && <div className="home-tree-children">{children.map((child) => <HomeTreeNode key={child.id} node={child} nodes={nodes} onOpen={onOpen} />)}</div>}
+    <div className="home-tree-row"><button className="home-tree-toggle" disabled={!children.length} onClick={() => onToggle(node.id)}>{children.length ? (expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />) : <span />}</button><button className="home-tree-main" onClick={() => onOpen(node)}><span className="home-tree-icon"><FolderOpen size={19} /></span><span><strong>{node.name}</strong><small>{node.documentCount} 份资料</small></span><ChevronRight size={16} /></button></div>
+    {children.length > 0 && expanded && <div className="home-tree-children">{children.map((child) => <HomeTreeNode key={child.id} node={child} nodes={nodes} onOpen={onOpen} expandedIds={expandedIds} onToggle={onToggle} />)}</div>}
   </div>;
 }
 
@@ -573,8 +618,10 @@ function TreeNode({ node, nodes, selectedId, onSelect, onDropFiles, onAdd, onRen
   const children = nodes.filter((candidate) => candidate.parentId === node.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const [open, setOpen] = useState(depth < 2);
   const [dropTarget, setDropTarget] = useState(false);
+  const dragExpandTimer = useRef<number | null>(null);
+  const hasLedgerPayload = (event: DragEvent) => Array.from(event.dataTransfer.types).some((type) => type === "application/x-document-ids" || type === "text/plain");
   return <>
-    <div className={`tree-row ${selectedId === node.id ? "selected" : ""} ${dropTarget ? "drop-target" : ""}`} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => onSelect(node)} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-document-ids")) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(true); } }} onDragLeave={() => setDropTarget(false)} onDrop={(event) => { event.preventDefault(); setDropTarget(false); const raw = event.dataTransfer.getData("application/x-document-ids"); if (raw) onDropFiles(JSON.parse(raw), node.id); }}>
+    <div className={`tree-row ${selectedId === node.id ? "selected" : ""} ${dropTarget ? "drop-target" : ""}`} style={{ paddingLeft: 8 + depth * 16 }} onClick={() => onSelect(node)} onDragEnter={(event) => { if (!hasLedgerPayload(event)) return; event.preventDefault(); setDropTarget(true); if (!open && children.length && dragExpandTimer.current === null) dragExpandTimer.current = window.setTimeout(() => { setOpen(true); dragExpandTimer.current = null; }, 650); }} onDragOver={(event) => { if (hasLedgerPayload(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; setDropTarget(true); } }} onDragLeave={(event) => { if (event.currentTarget.contains(event.relatedTarget as Node | null)) return; setDropTarget(false); if (dragExpandTimer.current !== null) { window.clearTimeout(dragExpandTimer.current); dragExpandTimer.current = null; } }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setDropTarget(false); if (dragExpandTimer.current !== null) window.clearTimeout(dragExpandTimer.current); dragExpandTimer.current = null; const custom = event.dataTransfer.getData("application/x-document-ids"); const fallback = event.dataTransfer.getData("text/plain"); const raw = custom || (fallback.startsWith("eazyledger:") ? fallback.slice(11) : ""); if (!raw) return; try { const ids = JSON.parse(raw); if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) onDropFiles(ids, node.id); } catch { /* 忽略非台账拖拽数据 */ } }}>
       <button className="tree-toggle" onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span />}</button>
       {open && children.length ? <FolderOpen size={16} /> : <Folder size={16} />}<span>{node.name}</span><small>{node.documentCount}</small><span className="node-actions"><button title="新建下级节点" onClick={(event) => { event.stopPropagation(); onAdd(node); }}><Plus size={11} /></button>{node.id !== "root" && <><button title="重命名" onClick={(event) => { event.stopPropagation(); onRename(node); }}><Pencil size={11} /></button><button title="复制节点" onClick={(event) => { event.stopPropagation(); onCopy(node); }}><Copy size={11} /></button><button className="danger" title="删除节点" onClick={(event) => { event.stopPropagation(); onDelete(node); }}><Trash2 size={11} /></button></>}</span>
     </div>
@@ -593,7 +640,7 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
   }
   return <aside className="preview-pane custom-scrollbar"><header><FileIcon extension={document.extension} /><div><strong>{document.name}</strong><small>{formatSize(document.size)} · {document.extension.toUpperCase()}</small></div></header>
     <div className="preview-box">{!preview && <span className="preview-loading">正在生成预览…</span>}{preview?.kind === "image" && <img src={preview.path} alt={document.name} />}{preview?.kind === "pdf" && <iframe src={preview.path} title={document.name} />}{(preview?.kind === "docx" || preview?.kind === "text") && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><span>暂不支持此格式预览</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</div>
-    <section className="properties"><h3>标签</h3><div className="tag-editor">{allTags.map((tag) => <button className={document.tags.some((item) => item.id === tag.id) ? "active" : ""} key={tag.id} onClick={() => void toggleTag(tag)}><span style={{ background: tag.color }} />{tag.name}</button>)}</div><h3>备注</h3><textarea value={notes} placeholder="添加说明或检索关键词…" onChange={(event) => setNotes(event.target.value)} onBlur={async () => { if (notes !== document.notes) { await api.updateNotes(document.id, notes); await onChanged(); } }} /><dl><dt>有效期</dt><dd className="expiry-editor"><input type="date" value={formatDateInput(document.expiresAt)} onChange={async (event) => { const value = event.target.value; await api.updateExpiry(document.id, value ? new Date(`${value}T23:59:59`).getTime() : null); await onChanged(); }} />{expiryState(document.expiresAt) && <span className={expiryState(document.expiresAt)?.kind}>{expiryState(document.expiresAt)?.label}</span>}</dd><dt>修改时间</dt><dd>{formatDate(document.modifiedAt, true)}</dd><dt>资料库路径</dt><dd title={document.relativePath}>{document.relativePath}</dd></dl><div className="preview-actions"><button onClick={() => void api.openDocument(document.id)}>打开文件</button><button onClick={() => void api.revealDocument(document.id)}>在资源管理器中显示</button></div></section>
+    <section className="properties"><h3>标签</h3><div className="tag-editor">{allTags.map((tag) => <button className={document.tags.some((item) => item.id === tag.id) ? "active" : ""} key={tag.id} onClick={() => void toggleTag(tag)}><span style={{ background: tag.color }} />{tag.name}</button>)}</div><h3>备注</h3><textarea value={notes} placeholder="添加说明或检索关键词…" onChange={(event) => setNotes(event.target.value)} onBlur={async () => { if (notes !== document.notes) { await api.updateNotes(document.id, notes); await onChanged(); } }} /><dl>{document.expiresAt && <><dt>有效期</dt><dd><span className={`expiry-chip ${expiryState(document.expiresAt)?.kind}`}><CalendarClock size={11} />{expiryState(document.expiresAt)?.label}</span></dd></>}<dt>修改时间</dt><dd>{formatDate(document.modifiedAt, true)}</dd><dt>资料库路径</dt><dd title={document.relativePath}>{document.relativePath}</dd></dl><div className="preview-actions"><button onClick={() => void api.openDocument(document.id)}>打开文件</button><button onClick={() => void api.revealDocument(document.id)}>在资源管理器中显示</button></div></section>
   </aside>;
 }
 
@@ -606,16 +653,18 @@ function FileIcon({ extension }: { extension: string }) {
 
 function breadcrumbFor(nodeId: string | null, nodes: NodeItem[]) { if (!nodeId) return []; const parts: NodeItem[] = []; let current = nodes.find((node) => node.id === nodeId); while (current) { parts.unshift(current); current = current.parentId ? nodes.find((node) => node.id === current!.parentId) : undefined; } return parts; }
 function nodePath(nodeId: string, nodes: NodeItem[]) { return breadcrumbFor(nodeId, nodes).map((node) => node.name).join(" / "); }
+function nodeDepth(node: NodeItem, nodes: NodeItem[]) { let depth = 0; let current = node; while (current.parentId) { depth += 1; const parent = nodes.find((candidate) => candidate.id === current.parentId); if (!parent) break; current = parent; } return depth; }
 function formatSize(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
-type ExpiryState = { days: number; kind: "expired" | "due-soon" | "active"; label: string };
+type ExpiryState = { days: number; kind: "expired" | "today" | "due-soon" | "active" | "safe"; label: string };
 function expiryState(expiresAt: number | null): ExpiryState | null {
   if (!expiresAt) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const expiry = new Date(expiresAt); expiry.setHours(0, 0, 0, 0);
   const days = Math.round((expiry.getTime() - today.getTime()) / 86_400_000);
   if (days < 0) return { days, kind: "expired", label: `已过期 ${Math.abs(days)} 天` };
-  if (days === 0) return { days, kind: "due-soon", label: "今日到期" };
-  return { days, kind: days <= 30 ? "due-soon" : "active", label: `剩余 ${days} 天` };
+  if (days === 0) return { days, kind: "today", label: "今日到期" };
+  if (days <= 30) return { days, kind: "due-soon", label: `剩余 ${days} 天` };
+  return { days, kind: days <= 90 ? "active" : "safe", label: `剩余 ${days} 天` };
 }
 function formatDateInput(timestamp: number | null) {
   if (!timestamp) return "";
