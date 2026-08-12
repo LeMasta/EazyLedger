@@ -1,6 +1,6 @@
 [package]
 name = "document-ledger"
-version = "0.4.1"
+version = "0.4.2"
 description = "Windows 本地资料台账管理工具"
 authors = ["Document Ledger Contributors"]
 edition = "2021"
@@ -26,3 +26,4 @@ zip = "2"
 regex = "1"
 notify = "7"
 open = "5"
+
