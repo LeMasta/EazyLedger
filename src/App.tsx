@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Bell, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight,
@@ -12,7 +12,12 @@ import type { AppTab, BootstrapData, DocumentItem, NodeItem, Preview, Tag } from
 import { currentVersion, findUpdate, installPendingUpdate, type AvailableUpdate } from "./updater";
 
 const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "" };
-const tagColors = ["#4f7cff", "#a855f7", "#f59e0b", "#10b981", "#ef4444", "#06b6d4", "#64748b"];
+const tagColors = [
+  "#2563eb", "#4f46e5", "#7c3aed", "#a855f7", "#db2777",
+  "#e11d48", "#ef4444", "#f97316", "#f59e0b", "#eab308",
+  "#84cc16", "#22c55e", "#10b981", "#14b8a6", "#06b6d4",
+  "#0ea5e9", "#64748b", "#78716c", "#8b5cf6", "#ec4899",
+];
 
 type ClipboardState = { mode: "copy" | "cut"; ids: string[] } | null;
 type ContextMenuState = { x: number; y: number; documentId: string } | null;
@@ -20,6 +25,9 @@ type TagMenuState = { x: number; y: number; documentIds: string[]; sourceTagId?:
 type ExpiryMenuState = { x: number; y: number; documentId: string } | null;
 type NodeMenuState = { x: number; y: number; node: NodeItem } | null;
 type TagEditorState = { mode: "create" | "edit"; tag?: Tag; documentIds: string[] } | null;
+type PointerDragPayload = { kind: "files"; ids: string[]; label: string } | { kind: "node"; nodeId: string; label: string };
+type PointerDragState = PointerDragPayload & { x: number; y: number };
+type PointerDragCandidate = PointerDragPayload & { pointerId: number; startX: number; startY: number };
 type SortKey = "name" | "modified" | "size";
 type UpdateUiState = {
   phase: "idle" | "checking" | "current" | "available" | "downloading" | "error";
@@ -34,7 +42,8 @@ export default function App() {
   const [tabs, setTabs] = useState<AppTab[]>([initialTab]);
   const [activeTabId, setActiveTabId] = useState("home");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [draggedDocumentIds, setDraggedDocumentIds] = useState<string[]>([]);
+  const [pointerDrag, setPointerDrag] = useState<PointerDragState | null>(null);
+  const [pointerTargetNodeId, setPointerTargetNodeId] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(() => localStorage.getItem("document-ledger.preview-open") !== "false");
   const [loading, setLoading] = useState(true);
@@ -51,10 +60,13 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>("modified");
   const [sortAscending, setSortAscending] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.4.4");
+  const [appVersion, setAppVersion] = useState("0.4.5");
   const [expiryReminderOpen, setExpiryReminderOpen] = useState(true);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
   const lastSelectedIndex = useRef<number | null>(null);
+  const pointerCandidateRef = useRef<PointerDragCandidate | null>(null);
+  const pointerDragRef = useRef<PointerDragState | null>(null);
+  const suppressPointerClickRef = useRef(false);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
@@ -149,6 +161,63 @@ export default function App() {
     }).then((fn) => (unlisten = fn));
     return () => unlisten?.();
   }, [activeTab.nodeId]);
+
+  useEffect(() => {
+    const nodes = data?.nodes ?? [];
+    const clearPointerDrag = () => {
+      pointerCandidateRef.current = null;
+      pointerDragRef.current = null;
+      setPointerDrag(null);
+      setPointerTargetNodeId(null);
+      document.body.classList.remove("internal-pointer-dragging");
+    };
+    const handlePointerMove = (event: PointerEvent) => {
+      const candidate = pointerCandidateRef.current;
+      if (!candidate || candidate.pointerId !== event.pointerId) return;
+      if (!(event.buttons & 1)) { clearPointerDrag(); return; }
+      let active = pointerDragRef.current;
+      if (!active) {
+        if (Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY) < 6) return;
+        active = candidate.kind === "files"
+          ? { kind: "files", ids: candidate.ids, label: candidate.label, x: event.clientX, y: event.clientY }
+          : { kind: "node", nodeId: candidate.nodeId, label: candidate.label, x: event.clientX, y: event.clientY };
+        pointerDragRef.current = active;
+        document.body.classList.add("internal-pointer-dragging");
+      } else active = { ...active, x: event.clientX, y: event.clientY };
+      event.preventDefault();
+      setPointerDrag(active);
+      setPointerTargetNodeId(resolvePointerTarget(event.clientX, event.clientY, active, nodes));
+    };
+    const handlePointerEnd = (event: PointerEvent) => {
+      const candidate = pointerCandidateRef.current;
+      if (!candidate || candidate.pointerId !== event.pointerId) return;
+      const active = pointerDragRef.current;
+      if (active) {
+        event.preventDefault();
+        const targetId = resolvePointerTarget(event.clientX, event.clientY, active, nodes);
+        if (targetId) {
+          if (active.kind === "files") void moveFiles(active.ids, targetId);
+          else {
+            const source = nodes.find((node) => node.id === active.nodeId);
+            const target = nodes.find((node) => node.id === targetId);
+            if (source && target) void moveNodeTo(source, target);
+          }
+        }
+        suppressPointerClickRef.current = true;
+        window.setTimeout(() => { suppressPointerClickRef.current = false; }, 0);
+      }
+      clearPointerDrag();
+    };
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerEnd, { passive: false });
+    window.addEventListener("pointercancel", handlePointerEnd, { passive: false });
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      document.body.classList.remove("internal-pointer-dragging");
+    };
+  }, [data?.nodes]);
 
   useEffect(() => {
     if (!selected) { setPreview(null); return; }
@@ -281,18 +350,26 @@ export default function App() {
     lastSelectedIndex.current = index;
   }
 
-  function handleDragStart(event: DragEvent, document: DocumentItem) {
+  function beginFilePointerDrag(event: ReactPointerEvent, document: DocumentItem) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, input, a, select, textarea")) return;
     const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id];
     if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id]));
-    const payload = JSON.stringify(ids);
-    event.dataTransfer.setData("application/x-document-ids", payload);
-    event.dataTransfer.setData("text/plain", `eazyledger:${payload}`);
-    event.dataTransfer.effectAllowed = "move";
-    setDraggedDocumentIds(ids);
+    pointerCandidateRef.current = {
+      kind: "files", ids, label: ids.length > 1 ? `${ids.length} 个文件` : document.name,
+      pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+    };
+  }
+
+  function beginNodePointerDrag(event: ReactPointerEvent, node: NodeItem) {
+    if (node.id === "root" || event.button !== 0 || (event.target as HTMLElement).closest("button, input, a, select, textarea")) return;
+    event.stopPropagation();
+    pointerCandidateRef.current = {
+      kind: "node", nodeId: node.id, label: node.name,
+      pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+    };
   }
 
   async function moveFiles(ids: string[], nodeId: string) {
-    setDraggedDocumentIds([]);
     await runAction(async () => { await api.moveDocuments(ids, nodeId); setSelectedIds(new Set()); await refreshAll(); });
   }
 
@@ -482,7 +559,7 @@ export default function App() {
     {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onChangeVault={async (migrate) => { const result = await api.changeVaultLocation(migrate); if (result) setSettingsNotice(result); }} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
       <aside className="sidebar custom-scrollbar">
         <SidebarSection title="台账架构" action={<FolderPlus size={14} />} onAction={() => void addNode()}>
-          <Tree nodes={data.nodes} selectedId={activeTab.nodeId} draggedDocumentIds={draggedDocumentIds} onSelect={selectNode} onDropFiles={(ids, nodeId) => void moveFiles(ids, nodeId)} onMoveNode={(node, target) => void moveNodeTo(node, target)} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
+          <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} targetNodeId={pointerTargetNodeId} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
         </SidebarSection>
         <SidebarSection title="标签" action={<Plus size={14} />} onAction={() => void addTag()}>
           <div className="tag-list">{data.tags.map((tag) => <div className={`tag-row ${activeTab.tagId === tag.id ? "selected" : ""}`} key={tag.id}>
@@ -511,9 +588,9 @@ export default function App() {
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
             return <div
-              className={`file-row ${selectedIds.has(document.id) ? "selected" : ""} ${draggedDocumentIds.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
-              key={document.id} draggable onDragStart={(event) => handleDragStart(event, document)} onDragEnd={() => setDraggedDocumentIds([])}
-              onClick={(event) => handleRowSelect(event, document, index)} onDoubleClick={() => void api.openDocument(document.id)}
+              className={`file-row ${selectedIds.has(document.id) ? "selected" : ""} ${pointerDrag?.kind === "files" && pointerDrag.ids.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
+              key={document.id} onPointerDown={(event) => beginFilePointerDrag(event, document)}
+              onClick={(event) => { if (!suppressPointerClickRef.current) handleRowSelect(event, document, index); }} onDoubleClick={() => { if (!suppressPointerClickRef.current) void api.openDocument(document.id); }}
               onContextMenu={(event) => { event.preventDefault(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); setContextMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}
             >
               <input type="checkbox" checked={selectedIds.has(document.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleDocumentSelection(document.id, index)} aria-label={`选择 ${document.name}`} />
@@ -533,6 +610,9 @@ export default function App() {
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {expiryMenu && <ExpiryBubbleMenu menu={expiryMenu} document={documents.find((item) => item.id === expiryMenu.documentId)} onSave={(expiresAt) => void updateDocumentExpiry(expiryMenu.documentId, expiresAt)} />}
     {externalDragging && <div className="drop-overlay"><Import size={46} /><strong>释放鼠标，导入到“{activeTab.title}”</strong><span>文件夹层级会自动创建为台账树</span></div>}
+    {pointerDrag && <div className={`pointer-drag-ghost ${pointerTargetNodeId ? "can-drop" : ""}`} style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
+      {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerTargetNodeId ? "松开即可移动" : "拖到左侧台账节点"}</small></span>
+    </div>}
     {expiryReminderOpen && expiryAlerts.length > 0 && <aside className="expiry-reminder"><header><AlertTriangle size={19} /><div><strong>有效期提醒</strong><small>{expiryAlerts.filter((item) => item.expiry.days < 0).length} 份已过期，{expiryAlerts.filter((item) => item.expiry.days >= 0).length} 份将在 30 天内到期</small></div><button onClick={() => setExpiryReminderOpen(false)} title="关闭提醒"><X size={15} /></button></header><div>{expiryAlerts.slice(0, 8).map(({ document, expiry }) => <button key={document.id} onClick={() => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); setExpiryReminderOpen(false); }}><span>{document.name}</span><em className={expiry.kind}>{expiry.label}</em></button>)}</div>{expiryAlerts.length > 8 && <footer>另有 {expiryAlerts.length - 8} 份资料需要关注，可在主页查看全部</footer>}</aside>}
     {loading && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
@@ -540,6 +620,14 @@ export default function App() {
 }
 
 function ROOT_FALLBACK(data: BootstrapData | null) { return data?.nodes.find((node) => node.parentId === null)?.id ?? "root"; }
+
+function resolvePointerTarget(x: number, y: number, drag: PointerDragState, nodes: NodeItem[]) {
+  const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-ledger-node-id]");
+  const targetId = row?.dataset.ledgerNodeId;
+  if (!targetId || !nodes.some((node) => node.id === targetId)) return null;
+  if (drag.kind === "node" && (drag.nodeId === targetId || descendantNodeIds(drag.nodeId, nodes).includes(targetId))) return null;
+  return targetId;
+}
 
 function CommandMenu({ children }: { children: ReactNode }) {
   return <details className="command-menu"><summary title="更多操作"><MoreHorizontal size={18} /></summary><div>{children}</div></details>;
@@ -647,16 +735,15 @@ function SidebarSection({ title, action, onAction, children }: { title: string; 
   return <section className="sidebar-section"><header><span>{title}</span><button onClick={onAction}>{action}</button></header>{children}</section>;
 }
 
-function Tree({ nodes, selectedId, draggedDocumentIds, onSelect, onDropFiles, onMoveNode, onPromote, onDemote, onAdd, onRename, onCopy, onDelete }: { nodes: NodeItem[]; selectedId: string | null; draggedDocumentIds: string[]; onSelect: (node: NodeItem) => void; onDropFiles: (ids: string[], nodeId: string) => void; onMoveNode: (node: NodeItem, target: NodeItem) => void; onPromote: (node: NodeItem) => void; onDemote: (node: NodeItem) => void; onAdd: (node: NodeItem) => void; onRename: (node: NodeItem) => void; onCopy: (node: NodeItem) => void; onDelete: (node: NodeItem) => void }) {
+function Tree({ nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onPromote, onDemote, onAdd, onRename, onCopy, onDelete }: { nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; targetNodeId: string | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onPromote: (node: NodeItem) => void; onDemote: (node: NodeItem) => void; onAdd: (node: NodeItem) => void; onRename: (node: NodeItem) => void; onCopy: (node: NodeItem) => void; onDelete: (node: NodeItem) => void }) {
   const [nodeMenu, setNodeMenu] = useState<NodeMenuState>(null);
-  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   useEffect(() => {
     const close = () => setNodeMenu(null);
     window.addEventListener("click", close);
     window.addEventListener("blur", close);
     return () => { window.removeEventListener("click", close); window.removeEventListener("blur", close); };
   }, []);
-  const rootProps = { nodes, selectedId, draggedDocumentIds, draggedNodeId, onSelect, onDropFiles, onMoveNode, onContextMenu: setNodeMenu, onNodeDragStart: setDraggedNodeId, onNodeDragEnd: () => setDraggedNodeId(null), depth: 0 };
+  const rootProps = { nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onContextMenu: setNodeMenu, depth: 0 };
   const menuNode = nodeMenu?.node;
   const parent = menuNode?.parentId ? nodes.find((item) => item.id === menuNode.parentId) : undefined;
   const siblings = menuNode?.parentId ? nodes.filter((item) => item.parentId === menuNode.parentId).sort((a, b) => a.sortOrder - b.sortOrder) : [];
@@ -675,57 +762,25 @@ function Tree({ nodes, selectedId, draggedDocumentIds, onSelect, onDropFiles, on
   </div>;
 }
 
-function TreeNode({ node, nodes, selectedId, draggedDocumentIds, draggedNodeId, onSelect, onDropFiles, onMoveNode, onContextMenu, onNodeDragStart, onNodeDragEnd, depth }: { node: NodeItem; nodes: NodeItem[]; selectedId: string | null; draggedDocumentIds: string[]; draggedNodeId: string | null; onSelect: (node: NodeItem) => void; onDropFiles: (ids: string[], nodeId: string) => void; onMoveNode: (node: NodeItem, target: NodeItem) => void; onContextMenu: (menu: NodeMenuState) => void; onNodeDragStart: (nodeId: string) => void; onNodeDragEnd: () => void; depth: number }) {
+function TreeNode({ node, nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onContextMenu, depth }: { node: NodeItem; nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; targetNodeId: string | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onContextMenu: (menu: NodeMenuState) => void; depth: number }) {
   const children = nodes.filter((candidate) => candidate.parentId === node.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const [open, setOpen] = useState(depth < 2);
-  const [dropTarget, setDropTarget] = useState<"files" | "node" | null>(null);
-  const dragExpandTimer = useRef<number | null>(null);
-  const draggedNode = draggedNodeId ? nodes.find((item) => item.id === draggedNodeId) : undefined;
-  const invalidNodeTarget = Boolean(draggedNode && (draggedNode.id === node.id || descendantNodeIds(draggedNode.id, nodes).includes(node.id)));
-  const hasFilePayload = (event: DragEvent) => draggedDocumentIds.length > 0 || Array.from(event.dataTransfer.types).some((type) => type === "application/x-document-ids" || type === "text/plain");
-  const dragKind = (event: DragEvent): "files" | "node" | null => {
-    const hasNodePayload = Boolean(draggedNodeId) || event.dataTransfer.types.includes("application/x-ledger-node-id");
-    if (hasNodePayload) return invalidNodeTarget ? null : "node";
-    if (hasFilePayload(event)) return "files";
-    return null;
-  };
-  const clearDrop = () => {
-    setDropTarget(null);
-    if (dragExpandTimer.current !== null) { window.clearTimeout(dragExpandTimer.current); dragExpandTimer.current = null; }
-  };
+  const isDropTarget = Boolean(pointerDrag && targetNodeId === node.id);
+  const isDraggedNode = pointerDrag?.kind === "node" && pointerDrag.nodeId === node.id;
+  useEffect(() => {
+    if (!isDropTarget || open || !children.length) return;
+    const timer = window.setTimeout(() => setOpen(true), 650);
+    return () => window.clearTimeout(timer);
+  }, [children.length, isDropTarget, open]);
   return <>
-    <div className={`tree-row ${selectedId === node.id ? "selected" : ""} ${draggedNodeId === node.id ? "node-dragging" : ""} ${dropTarget ? `drop-target ${dropTarget}-target` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
-      draggable={node.id !== "root"}
-      onDragStart={(event) => { if (node.id === "root") return; event.stopPropagation(); event.dataTransfer.setData("application/x-ledger-node-id", node.id); event.dataTransfer.setData("text/plain", `eazyledger-node:${node.id}`); event.dataTransfer.effectAllowed = "move"; onNodeDragStart(node.id); }}
-      onDragEnd={() => { clearDrop(); onNodeDragEnd(); }}
+    <div data-ledger-node-id={node.id} className={`tree-row ${selectedId === node.id ? "selected" : ""} ${isDraggedNode ? "node-dragging" : ""} ${isDropTarget ? `drop-target ${pointerDrag?.kind === "node" ? "node" : "files"}-target` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
+      onPointerDown={(event) => onNodePointerDown(event, node)}
       onClick={() => onSelect(node)}
-      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu({ x: event.clientX, y: event.clientY, node }); }}
-      onDragEnter={(event) => { const kind = dragKind(event); if (!kind) return; event.preventDefault(); event.stopPropagation(); setDropTarget(kind); if (!open && children.length && dragExpandTimer.current === null) dragExpandTimer.current = window.setTimeout(() => { setOpen(true); dragExpandTimer.current = null; }, 650); }}
-      onDragOver={(event) => { const kind = dragKind(event); if (!kind) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; setDropTarget(kind); }}
-      onDragLeave={(event) => { if (event.currentTarget.contains(event.relatedTarget as Node | null)) return; clearDrop(); }}
-      onDrop={(event) => {
-        event.preventDefault(); event.stopPropagation();
-        const kind = dropTarget ?? dragKind(event);
-        clearDrop();
-        if (kind === "node") {
-          const rawId = draggedNodeId || event.dataTransfer.getData("application/x-ledger-node-id") || event.dataTransfer.getData("text/plain").replace(/^eazyledger-node:/, "");
-          const source = nodes.find((item) => item.id === rawId);
-          if (source && source.id !== node.id) onMoveNode(source, node);
-          onNodeDragEnd();
-          return;
-        }
-        if (kind !== "files") return;
-        const custom = event.dataTransfer.getData("application/x-document-ids");
-        const fallback = event.dataTransfer.getData("text/plain");
-        const raw = custom || (fallback.startsWith("eazyledger:") ? fallback.slice(11) : "");
-        let ids = draggedDocumentIds;
-        if (!ids.length && raw) { try { const parsed = JSON.parse(raw); if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) ids = parsed; } catch { /* 忽略非台账拖拽数据 */ } }
-        if (ids.length) onDropFiles(ids, node.id);
-      }}>
-      <button className="tree-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span />}</button>
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu({ x: event.clientX, y: event.clientY, node }); }}>
+      <button className="tree-toggle" onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span />}</button>
       {open && children.length ? <FolderOpen size={16} /> : <Folder size={16} />}<span>{node.name}</span><small>{node.documentCount}</small><span className="node-drag-hint">{node.id === "root" ? "右键管理" : "拖拽调整 · 右键管理"}</span>
     </div>
-    {open && children.map((child) => <TreeNode key={child.id} node={child} nodes={nodes} selectedId={selectedId} draggedDocumentIds={draggedDocumentIds} draggedNodeId={draggedNodeId} onSelect={onSelect} onDropFiles={onDropFiles} onMoveNode={onMoveNode} onContextMenu={onContextMenu} onNodeDragStart={onNodeDragStart} onNodeDragEnd={onNodeDragEnd} depth={depth + 1} />)}
+    {open && children.map((child) => <TreeNode key={child.id} node={child} nodes={nodes} selectedId={selectedId} pointerDrag={pointerDrag} targetNodeId={targetNodeId} onSelect={onSelect} onNodePointerDown={onNodePointerDown} onContextMenu={onContextMenu} depth={depth + 1} />)}
   </>;
 }
 
