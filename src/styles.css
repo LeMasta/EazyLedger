@@ -417,3 +417,19 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
   .list-header, .file-row { grid-template-columns: 24px minmax(250px, 1fr) 105px 76px 30px; }
   .commandbar > button { padding: 0 6px; }
 }
+
+
+/* v0.4.4: reliable internal drag/drop and node hierarchy management */
+.file-row[draggable="true"] { cursor: grab; }
+.file-row[draggable="true"]:active { cursor: grabbing; }
+.file-row.dragging { opacity: .55; outline: 1px dashed #5c91dd; }
+.tree-row[draggable="true"] { cursor: grab; }
+.tree-row[draggable="true"]:active { cursor: grabbing; }
+.tree-row.node-dragging { opacity: .45; }
+.tree-row.drop-target.node-target::after { content: "设为下级"; }
+.tree-row.drop-target.files-target::after { content: "移动文件到这里"; }
+.node-drag-hint { display: none; flex: none !important; color: #6e7b8d; font-size: 9px; }
+.tree-row:hover > .node-drag-hint { display: inline; }
+.tree-row:hover > small { display: none; }
+.node-context-menu { width: 240px; }
+.context-menu button:disabled { cursor: not-allowed; opacity: .42; background: transparent; }
