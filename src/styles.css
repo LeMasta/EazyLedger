@@ -233,7 +233,7 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .color-picker { height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 9px; border: 1px solid #cbd3dd; border-radius: 6px; }
 .color-picker input { width: 24px; height: 24px; padding: 0; border: 0; background: transparent; }
 .color-picker code { color: #687386; }
-.color-swatches { display: flex; gap: 8px; }
+.color-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .color-swatches button { width: 25px; height: 25px; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 0 1px #c8ced7; }
 .color-swatches button.active { box-shadow: 0 0 0 2px #2868c7; }
 .tag-preview { display: flex; align-items: center; gap: 10px; margin: 17px 0; padding: 12px; border-radius: 7px; background: #f5f7fa; color: #727d8b; font-size: 11px; }
@@ -419,12 +419,12 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 }
 
 
-/* v0.4.4: reliable internal drag/drop and node hierarchy management */
-.file-row[draggable="true"] { cursor: grab; }
-.file-row[draggable="true"]:active { cursor: grabbing; }
+/* v0.4.5: pointer-driven internal drag/drop and expanded tag palette */
+.file-row { cursor: grab; touch-action: none; }
+.file-row:active { cursor: grabbing; }
 .file-row.dragging { opacity: .55; outline: 1px dashed #5c91dd; }
-.tree-row[draggable="true"] { cursor: grab; }
-.tree-row[draggable="true"]:active { cursor: grabbing; }
+.tree-row { cursor: grab; touch-action: none; }
+.tree-row:active { cursor: grabbing; }
 .tree-row.node-dragging { opacity: .45; }
 .tree-row.drop-target.node-target::after { content: "设为下级"; }
 .tree-row.drop-target.files-target::after { content: "移动文件到这里"; }
@@ -433,3 +433,9 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .tree-row:hover > small { display: none; }
 .node-context-menu { width: 240px; }
 .context-menu button:disabled { cursor: not-allowed; opacity: .42; background: transparent; }
+.internal-pointer-dragging, .internal-pointer-dragging * { cursor: grabbing !important; user-select: none !important; }
+.pointer-drag-ghost { position: fixed; z-index: 220; max-width: 260px; min-height: 44px; padding: 7px 11px; display: flex; align-items: center; gap: 8px; pointer-events: none; border: 1px solid #b9c4d2; border-radius: 9px; background: #ffffffee; color: #526174; box-shadow: 0 8px 24px #1d2a3b30; }
+.pointer-drag-ghost.can-drop { border-color: #5b92dd; background: #edf6ffed; color: #185aa8; }
+.pointer-drag-ghost > span { min-width: 0; display: grid; gap: 2px; }
+.pointer-drag-ghost strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.pointer-drag-ghost small { color: #788596; font-size: 9px; }
