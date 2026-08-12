@@ -1,0 +1,12 @@
+node_modules/
+dist/
+src-tauri/target/
+release/
+upload/
+.agents/
+.codex/
+document-ledger-source.zip
+*.key
+*.key.pub
+*.log
+.DS_Store
