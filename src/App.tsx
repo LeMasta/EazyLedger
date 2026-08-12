@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Bell, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight,
+  AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Bell, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight, History,
   ClipboardPaste, Copy, Download, File, FileImage, FilePlus2, FileText, Folder, FolderInput,
   FolderOpen, FolderPlus, HardDrive, Image, Import, Maximize2, MoreHorizontal, PanelRightClose,
   PanelRightOpen, Pencil, Plus, RefreshCw, RotateCcw, RotateCw, Scissors, Search, Star, Tags, Trash2, X, House, Files, Settings, Database, ZoomIn, ZoomOut,
@@ -28,7 +28,18 @@ type TagEditorState = { mode: "create" | "edit"; tag?: Tag; documentIds: string[
 type PointerDragPayload = { kind: "files"; ids: string[]; label: string } | { kind: "node"; nodeId: string; label: string };
 type PointerDragState = PointerDragPayload & { x: number; y: number };
 type PointerDragCandidate = PointerDragPayload & { pointerId: number; startX: number; startY: number };
-type SortKey = "name" | "modified" | "size";
+type NodeDropPosition = "before" | "inside" | "after";
+type PointerDropTarget = { nodeId: string; position: NodeDropPosition };
+type SortKey = "modified" | "name" | "extension" | "size" | "expiry";
+type LedgerNotification = {
+  id: string;
+  documentId: string;
+  title: string;
+  message: string;
+  tone: "expired" | "today" | "due-soon";
+  createdAt: number;
+  read: boolean;
+};
 type UpdateUiState = {
   phase: "idle" | "checking" | "current" | "available" | "downloading" | "error";
   info?: AvailableUpdate;
@@ -43,7 +54,7 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState("home");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pointerDrag, setPointerDrag] = useState<PointerDragState | null>(null);
-  const [pointerTargetNodeId, setPointerTargetNodeId] = useState<string | null>(null);
+  const [pointerDropTarget, setPointerDropTarget] = useState<PointerDropTarget | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(() => localStorage.getItem("document-ledger.preview-open") !== "false");
   const [loading, setLoading] = useState(true);
@@ -57,11 +68,12 @@ export default function App() {
   const [searchTagIds, setSearchTagIds] = useState<string[]>([]);
   const [batchNodeId, setBatchNodeId] = useState("root");
   const [batchTagId, setBatchTagId] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("modified");
-  const [sortAscending, setSortAscending] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
+  const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.4.5");
-  const [expiryReminderOpen, setExpiryReminderOpen] = useState(true);
+  const [appVersion, setAppVersion] = useState("0.4.6");
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [notifications, setNotifications] = useState<LedgerNotification[]>(readNotifications);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
   const lastSelectedIndex = useRef<number | null>(null);
   const pointerCandidateRef = useRef<PointerDragCandidate | null>(null);
@@ -71,17 +83,16 @@ export default function App() {
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
-  const sortedDocuments = useMemo(() => [...documents].sort((a, b) => {
-    const comparison = sortKey === "name" ? a.name.localeCompare(b.name, "zh-CN") : sortKey === "size" ? a.size - b.size : a.modifiedAt - b.modifiedAt;
-    return sortAscending ? comparison : -comparison;
-  }), [documents, sortAscending, sortKey]);
+  const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
   const expiryAlerts = useMemo(() => (data?.documents ?? [])
     .map((document) => ({ document, expiry: expiryState(document.expiresAt) }))
     .filter((item): item is { document: DocumentItem; expiry: ExpiryState } => Boolean(item.expiry && item.expiry.days <= 30))
     .sort((a, b) => a.expiry.days - b.expiry.days), [data]);
+  const unreadNotificationCount = notifications.filter((item) => !item.read).length;
 
   const refreshBootstrap = useCallback(async () => {
     const next = await api.bootstrap();
+    next.nodes = applyStoredNodeOrder(next.nodes);
     setData(next);
     return next;
   }, []);
@@ -168,7 +179,7 @@ export default function App() {
       pointerCandidateRef.current = null;
       pointerDragRef.current = null;
       setPointerDrag(null);
-      setPointerTargetNodeId(null);
+      setPointerDropTarget(null);
       document.body.classList.remove("internal-pointer-dragging");
     };
     const handlePointerMove = (event: PointerEvent) => {
@@ -186,7 +197,7 @@ export default function App() {
       } else active = { ...active, x: event.clientX, y: event.clientY };
       event.preventDefault();
       setPointerDrag(active);
-      setPointerTargetNodeId(resolvePointerTarget(event.clientX, event.clientY, active, nodes));
+      setPointerDropTarget(resolvePointerTarget(event.clientX, event.clientY, active, nodes));
     };
     const handlePointerEnd = (event: PointerEvent) => {
       const candidate = pointerCandidateRef.current;
@@ -194,13 +205,13 @@ export default function App() {
       const active = pointerDragRef.current;
       if (active) {
         event.preventDefault();
-        const targetId = resolvePointerTarget(event.clientX, event.clientY, active, nodes);
-        if (targetId) {
-          if (active.kind === "files") void moveFiles(active.ids, targetId);
+        const dropTarget = resolvePointerTarget(event.clientX, event.clientY, active, nodes);
+        if (dropTarget) {
+          if (active.kind === "files") void moveFiles(active.ids, dropTarget.nodeId);
           else {
             const source = nodes.find((node) => node.id === active.nodeId);
-            const target = nodes.find((node) => node.id === targetId);
-            if (source && target) void moveNodeTo(source, target);
+            const target = nodes.find((node) => node.id === dropTarget.nodeId);
+            if (source && target) void moveNodeByDrop(source, target, dropTarget.position);
           }
         }
         suppressPointerClickRef.current = true;
@@ -226,6 +237,27 @@ export default function App() {
   }, [selected?.id]);
 
   useEffect(() => { localStorage.setItem("document-ledger.preview-open", String(previewOpen)); }, [previewOpen]);
+
+  useEffect(() => {
+    localStorage.setItem("document-ledger.file-sort", JSON.stringify({ key: sortKey, ascending: sortAscending }));
+  }, [sortAscending, sortKey]);
+
+  useEffect(() => {
+    if (!data) return;
+    setNotifications((current) => {
+      const known = new Set(current.map((item) => item.id));
+      const additions = expiryAlerts.flatMap(({ document, expiry }) => {
+        const tone: LedgerNotification["tone"] = expiry.kind === "expired" ? "expired" : expiry.kind === "today" ? "today" : "due-soon";
+        const id = `${document.id}:${document.expiresAt}:${tone}`;
+        if (known.has(id)) return [];
+        return [{ id, documentId: document.id, title: document.name, message: expiry.label, tone, createdAt: Date.now(), read: false } satisfies LedgerNotification];
+      });
+      if (!additions.length) return current;
+      const next = [...additions, ...current].slice(0, 200);
+      writeNotifications(next);
+      return next;
+    });
+  }, [data, expiryAlerts]);
 
   useEffect(() => {
     const close = () => { setContextMenu(null); setTagMenu(null); setExpiryMenu(null); };
@@ -458,10 +490,20 @@ export default function App() {
   }
 
   async function moveNodeTo(node: NodeItem, target: NodeItem) {
+    await moveNodeByDrop(node, target, "inside");
+  }
+
+  async function moveNodeByDrop(node: NodeItem, target: NodeItem, position: NodeDropPosition) {
     if (node.id === "root" || node.id === target.id) return;
     const descendants = new Set(descendantNodeIds(node.id, data?.nodes ?? []));
     if (descendants.has(target.id)) { setError("不能将节点移动到自身或其下级节点"); return; }
-    await runAction(async () => { await api.moveNode(node.id, target.id); await refreshAll(); });
+    const parentId = position === "inside" ? target.id : target.parentId;
+    if (!parentId) return;
+    await runAction(async () => {
+      if (node.parentId !== parentId) await api.moveNode(node.id, parentId);
+      persistNodeOrderAfterDrop(data?.nodes ?? [], node.id, target.id, parentId, position);
+      await refreshAll();
+    });
   }
 
   async function promoteNode(node: NodeItem) {
@@ -519,7 +561,30 @@ export default function App() {
 
   function setSort(next: SortKey) {
     if (next === sortKey) setSortAscending((value) => !value);
-    else { setSortKey(next); setSortAscending(true); }
+    else { setSortKey(next); setSortAscending(next !== "modified"); }
+  }
+
+  function markAllNotificationsRead() {
+    setNotifications((current) => {
+      const next = current.map((item) => ({ ...item, read: true }));
+      writeNotifications(next);
+      return next;
+    });
+  }
+
+  function openNotification(item: LedgerNotification) {
+    setNotifications((current) => {
+      const next = current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry);
+      writeNotifications(next);
+      return next;
+    });
+    const document = data?.documents.find((entry) => entry.id === item.documentId);
+    const node = document && data?.nodes.find((entry) => entry.id === document.nodeId);
+    if (node && document) {
+      selectNode(node);
+      setSelectedIds(new Set([document.id]));
+      setNotificationCenterOpen(false);
+    }
   }
 
   if (!data) return <div className="splash">{error ? `无法启动：${error}` : "正在打开资料台账…"}</div>;
@@ -552,14 +617,14 @@ export default function App() {
         <hr /><button onClick={() => void api.exportManifest()}><Download size={14} />导出台账</button><button onClick={() => void api.createBackup()}><Archive size={14} />完整备份</button>
       </CommandMenu>
       <span className="command-spacer" />
-      <button className={`notification-button ${expiryAlerts.length ? "has-alerts" : ""}`} title="查看有效期提醒" onClick={() => setExpiryReminderOpen((open) => !open)}><Bell size={16} />通知{expiryAlerts.length > 0 && <span>{expiryAlerts.length > 99 ? "99+" : expiryAlerts.length}</span>}</button>
+      <button className={`notification-button ${unreadNotificationCount ? "has-alerts" : ""}`} title="打开通知中心" onClick={() => setNotificationCenterOpen(true)}><Bell size={16} />通知{unreadNotificationCount > 0 && <span>{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}</button>
       <button onClick={openSettings}><Settings size={16} />设置</button>
       <button onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}{previewOpen ? "隐藏预览" : "显示预览"}</button>
     </section>
     {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onChangeVault={async (migrate) => { const result = await api.changeVaultLocation(migrate); if (result) setSettingsNotice(result); }} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
       <aside className="sidebar custom-scrollbar">
         <SidebarSection title="台账架构" action={<FolderPlus size={14} />} onAction={() => void addNode()}>
-          <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} targetNodeId={pointerTargetNodeId} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
+          <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} dropTarget={pointerDropTarget} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
         </SidebarSection>
         <SidebarSection title="标签" action={<Plus size={14} />} onAction={() => void addTag()}>
           <div className="tag-list">{data.tags.map((tag) => <div className={`tag-row ${activeTab.tagId === tag.id ? "selected" : ""}`} key={tag.id}>
@@ -582,7 +647,7 @@ export default function App() {
         </div>}
         <div className="list-header">
           <input type="checkbox" checked={documents.length > 0 && selectedIds.size === documents.length} onChange={(event) => setSelectedIds(event.target.checked ? new Set(documents.map((item) => item.id)) : new Set())} />
-          <button onClick={() => setSort("name")}>名称、标签和有效期 <ArrowDownAZ size={13} /></button><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button>
+          <span className="sort-heading"><button onClick={() => setSort("name")}>名称、标签和有效期 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button>
         </div>
         <div className="file-list custom-scrollbar">
           {sortedDocuments.map((document, index) => {
@@ -610,10 +675,10 @@ export default function App() {
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {expiryMenu && <ExpiryBubbleMenu menu={expiryMenu} document={documents.find((item) => item.id === expiryMenu.documentId)} onSave={(expiresAt) => void updateDocumentExpiry(expiryMenu.documentId, expiresAt)} />}
     {externalDragging && <div className="drop-overlay"><Import size={46} /><strong>释放鼠标，导入到“{activeTab.title}”</strong><span>文件夹层级会自动创建为台账树</span></div>}
-    {pointerDrag && <div className={`pointer-drag-ghost ${pointerTargetNodeId ? "can-drop" : ""}`} style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
-      {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerTargetNodeId ? "松开即可移动" : "拖到左侧台账节点"}</small></span>
+    {pointerDrag && <div className={`pointer-drag-ghost ${pointerDropTarget ? "can-drop" : ""}`} style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
+      {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerDropTarget ? pointerDrag.kind === "files" ? "松开即可移动文件" : pointerDropTarget.position === "inside" ? "松开设为子节点" : pointerDropTarget.position === "before" ? "松开插到节点前" : "松开插到节点后" : "拖到左侧台账节点"}</small></span>
     </div>}
-    {expiryReminderOpen && expiryAlerts.length > 0 && <aside className="expiry-reminder"><header><AlertTriangle size={19} /><div><strong>有效期提醒</strong><small>{expiryAlerts.filter((item) => item.expiry.days < 0).length} 份已过期，{expiryAlerts.filter((item) => item.expiry.days >= 0).length} 份将在 30 天内到期</small></div><button onClick={() => setExpiryReminderOpen(false)} title="关闭提醒"><X size={15} /></button></header><div>{expiryAlerts.slice(0, 8).map(({ document, expiry }) => <button key={document.id} onClick={() => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); setExpiryReminderOpen(false); }}><span>{document.name}</span><em className={expiry.kind}>{expiry.label}</em></button>)}</div>{expiryAlerts.length > 8 && <footer>另有 {expiryAlerts.length - 8} 份资料需要关注，可在主页查看全部</footer>}</aside>}
+    {notificationCenterOpen && <><button className="notification-scrim" aria-label="关闭通知中心" onClick={() => setNotificationCenterOpen(false)} /><aside className="notification-center"><header><div><Bell size={20} /><span><strong>通知中心</strong><small>有效期告警与历史通知</small></span></div><button title="关闭" onClick={() => setNotificationCenterOpen(false)}><X size={17} /></button></header><section className="notification-summary"><span><AlertTriangle size={16} />当前需关注 <strong>{expiryAlerts.length}</strong> 份</span>{unreadNotificationCount > 0 && <button onClick={markAllNotificationsRead}><Check size={14} />全部已读</button>}</section><div className="notification-history custom-scrollbar">{notifications.length ? notifications.map((item) => <button className={`${item.read ? "read" : "unread"} ${item.tone}`} key={item.id} onClick={() => openNotification(item)}><span className="notification-status" /><span><strong>{item.title}</strong><small>{item.message} · {formatDate(item.createdAt, true)}</small></span>{!item.read && <i>新</i>}</button>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div><footer>最多保留最近 200 条记录</footer></aside></>}
     {loading && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
   </main>;
@@ -626,7 +691,11 @@ function resolvePointerTarget(x: number, y: number, drag: PointerDragState, node
   const targetId = row?.dataset.ledgerNodeId;
   if (!targetId || !nodes.some((node) => node.id === targetId)) return null;
   if (drag.kind === "node" && (drag.nodeId === targetId || descendantNodeIds(drag.nodeId, nodes).includes(targetId))) return null;
-  return targetId;
+  if (drag.kind === "files" || nodes.find((node) => node.id === targetId)?.parentId === null || !row) return { nodeId: targetId, position: "inside" } satisfies PointerDropTarget;
+  const rect = row.getBoundingClientRect();
+  const ratio = (y - rect.top) / Math.max(rect.height, 1);
+  const position: NodeDropPosition = ratio < .28 ? "before" : ratio > .72 ? "after" : "inside";
+  return { nodeId: targetId, position } satisfies PointerDropTarget;
 }
 
 function CommandMenu({ children }: { children: ReactNode }) {
@@ -735,7 +804,7 @@ function SidebarSection({ title, action, onAction, children }: { title: string; 
   return <section className="sidebar-section"><header><span>{title}</span><button onClick={onAction}>{action}</button></header>{children}</section>;
 }
 
-function Tree({ nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onPromote, onDemote, onAdd, onRename, onCopy, onDelete }: { nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; targetNodeId: string | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onPromote: (node: NodeItem) => void; onDemote: (node: NodeItem) => void; onAdd: (node: NodeItem) => void; onRename: (node: NodeItem) => void; onCopy: (node: NodeItem) => void; onDelete: (node: NodeItem) => void }) {
+function Tree({ nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePointerDown, onPromote, onDemote, onAdd, onRename, onCopy, onDelete }: { nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; dropTarget: PointerDropTarget | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onPromote: (node: NodeItem) => void; onDemote: (node: NodeItem) => void; onAdd: (node: NodeItem) => void; onRename: (node: NodeItem) => void; onCopy: (node: NodeItem) => void; onDelete: (node: NodeItem) => void }) {
   const [nodeMenu, setNodeMenu] = useState<NodeMenuState>(null);
   useEffect(() => {
     const close = () => setNodeMenu(null);
@@ -743,7 +812,7 @@ function Tree({ nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePo
     window.addEventListener("blur", close);
     return () => { window.removeEventListener("click", close); window.removeEventListener("blur", close); };
   }, []);
-  const rootProps = { nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onContextMenu: setNodeMenu, depth: 0 };
+  const rootProps = { nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePointerDown, onContextMenu: setNodeMenu, depth: 0 };
   const menuNode = nodeMenu?.node;
   const parent = menuNode?.parentId ? nodes.find((item) => item.id === menuNode.parentId) : undefined;
   const siblings = menuNode?.parentId ? nodes.filter((item) => item.parentId === menuNode.parentId).sort((a, b) => a.sortOrder - b.sortOrder) : [];
@@ -762,25 +831,25 @@ function Tree({ nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePo
   </div>;
 }
 
-function TreeNode({ node, nodes, selectedId, pointerDrag, targetNodeId, onSelect, onNodePointerDown, onContextMenu, depth }: { node: NodeItem; nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; targetNodeId: string | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onContextMenu: (menu: NodeMenuState) => void; depth: number }) {
+function TreeNode({ node, nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePointerDown, onContextMenu, depth }: { node: NodeItem; nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; dropTarget: PointerDropTarget | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onContextMenu: (menu: NodeMenuState) => void; depth: number }) {
   const children = nodes.filter((candidate) => candidate.parentId === node.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const [open, setOpen] = useState(depth < 2);
-  const isDropTarget = Boolean(pointerDrag && targetNodeId === node.id);
+  const isDropTarget = Boolean(pointerDrag && dropTarget?.nodeId === node.id);
   const isDraggedNode = pointerDrag?.kind === "node" && pointerDrag.nodeId === node.id;
   useEffect(() => {
-    if (!isDropTarget || open || !children.length) return;
+    if (!isDropTarget || dropTarget?.position !== "inside" || open || !children.length) return;
     const timer = window.setTimeout(() => setOpen(true), 650);
     return () => window.clearTimeout(timer);
-  }, [children.length, isDropTarget, open]);
+  }, [children.length, dropTarget?.position, isDropTarget, open]);
   return <>
-    <div data-ledger-node-id={node.id} className={`tree-row ${selectedId === node.id ? "selected" : ""} ${isDraggedNode ? "node-dragging" : ""} ${isDropTarget ? `drop-target ${pointerDrag?.kind === "node" ? "node" : "files"}-target` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
+    <div data-ledger-node-id={node.id} className={`tree-row ${selectedId === node.id ? "selected" : ""} ${isDraggedNode ? "node-dragging" : ""} ${isDropTarget ? `drop-target ${pointerDrag?.kind === "node" ? "node" : "files"}-target drop-${dropTarget?.position}` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
       onPointerDown={(event) => onNodePointerDown(event, node)}
       onClick={() => onSelect(node)}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu({ x: event.clientX, y: event.clientY, node }); }}>
       <button className="tree-toggle" onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span />}</button>
       {open && children.length ? <FolderOpen size={16} /> : <Folder size={16} />}<span>{node.name}</span><small>{node.documentCount}</small><span className="node-drag-hint">{node.id === "root" ? "右键管理" : "拖拽调整 · 右键管理"}</span>
     </div>
-    {open && children.map((child) => <TreeNode key={child.id} node={child} nodes={nodes} selectedId={selectedId} pointerDrag={pointerDrag} targetNodeId={targetNodeId} onSelect={onSelect} onNodePointerDown={onNodePointerDown} onContextMenu={onContextMenu} depth={depth + 1} />)}
+    {open && children.map((child) => <TreeNode key={child.id} node={child} nodes={nodes} selectedId={selectedId} pointerDrag={pointerDrag} dropTarget={dropTarget} onSelect={onSelect} onNodePointerDown={onNodePointerDown} onContextMenu={onContextMenu} depth={depth + 1} />)}
   </>;
 }
 
@@ -825,6 +894,72 @@ function breadcrumbFor(nodeId: string | null, nodes: NodeItem[]) { if (!nodeId) 
 function nodePath(nodeId: string, nodes: NodeItem[]) { return breadcrumbFor(nodeId, nodes).map((node) => node.name).join(" / "); }
 function nodeDepth(node: NodeItem, nodes: NodeItem[]) { let depth = 0; let current = node; while (current.parentId) { depth += 1; const parent = nodes.find((candidate) => candidate.id === current.parentId); if (!parent) break; current = parent; } return depth; }
 function descendantNodeIds(nodeId: string, nodes: NodeItem[]) { const ids: string[] = []; const visit = (id: string) => nodes.filter((node) => node.parentId === id).forEach((child) => { ids.push(child.id); visit(child.id); }); visit(nodeId); return ids; }
+function nodeOrderKey(parentId: string | null) { return parentId ?? "__root__"; }
+function readNodeOrder(): Record<string, string[]> {
+  try { return JSON.parse(localStorage.getItem("document-ledger.node-order") ?? "{}"); }
+  catch { return {}; }
+}
+function applyStoredNodeOrder(nodes: NodeItem[]) {
+  const stored = readNodeOrder();
+  const grouped = new Map<string, NodeItem[]>();
+  nodes.forEach((node) => { const key = nodeOrderKey(node.parentId); grouped.set(key, [...(grouped.get(key) ?? []), node]); });
+  const result: NodeItem[] = [];
+  grouped.forEach((items, key) => {
+    const preferred = stored[key] ?? [];
+    const rank = new Map(preferred.map((id, index) => [id, index]));
+    items.sort((a, b) => {
+      const aRank = rank.get(a.id); const bRank = rank.get(b.id);
+      if (aRank !== undefined || bRank !== undefined) return (aRank ?? Number.MAX_SAFE_INTEGER) - (bRank ?? Number.MAX_SAFE_INTEGER);
+      return a.sortOrder - b.sortOrder;
+    }).forEach((node, index) => result.push({ ...node, sortOrder: index }));
+  });
+  return result;
+}
+function persistNodeOrderAfterDrop(nodes: NodeItem[], sourceId: string, targetId: string, destinationParentId: string, position: NodeDropPosition) {
+  const order = readNodeOrder();
+  const parentIds = new Set(nodes.map((node) => node.parentId));
+  parentIds.forEach((parentId) => {
+    const key = nodeOrderKey(parentId);
+    const current = nodes.filter((node) => node.parentId === parentId).sort((a, b) => a.sortOrder - b.sortOrder).map((node) => node.id);
+    order[key] = (order[key]?.filter((id) => current.includes(id)) ?? current).filter((id) => id !== sourceId);
+    current.forEach((id) => { if (!order[key].includes(id) && id !== sourceId) order[key].push(id); });
+  });
+  const key = nodeOrderKey(destinationParentId);
+  const destination = order[key] ?? [];
+  if (position === "inside") destination.push(sourceId);
+  else {
+    const targetIndex = destination.indexOf(targetId);
+    destination.splice(targetIndex < 0 ? destination.length : targetIndex + (position === "after" ? 1 : 0), 0, sourceId);
+  }
+  order[key] = destination;
+  localStorage.setItem("document-ledger.node-order", JSON.stringify(order));
+}
+function readSortPreference(): { key: SortKey; ascending: boolean } {
+  try {
+    const value = JSON.parse(localStorage.getItem("document-ledger.file-sort") ?? "null");
+    if (["modified", "name", "extension", "size", "expiry"].includes(value?.key) && typeof value?.ascending === "boolean") return value;
+  } catch { /* use defaults */ }
+  return { key: "modified", ascending: false };
+}
+function compareDocuments(a: DocumentItem, b: DocumentItem, key: SortKey, ascending: boolean) {
+  if (key === "expiry" && (a.expiresAt === null || b.expiresAt === null)) {
+    if (a.expiresAt === b.expiresAt) return a.name.localeCompare(b.name, "zh-CN");
+    return a.expiresAt === null ? 1 : -1;
+  }
+  const comparison = key === "name" ? a.name.localeCompare(b.name, "zh-CN")
+    : key === "extension" ? a.extension.localeCompare(b.extension, "zh-CN") || a.name.localeCompare(b.name, "zh-CN")
+      : key === "size" ? a.size - b.size
+        : key === "expiry" ? (a.expiresAt ?? 0) - (b.expiresAt ?? 0)
+          : a.modifiedAt - b.modifiedAt;
+  return (ascending ? comparison : -comparison) || a.name.localeCompare(b.name, "zh-CN");
+}
+function readNotifications(): LedgerNotification[] {
+  try {
+    const value = JSON.parse(localStorage.getItem("document-ledger.notifications") ?? "[]");
+    return Array.isArray(value) ? value.slice(0, 200) : [];
+  } catch { return []; }
+}
+function writeNotifications(items: LedgerNotification[]) { localStorage.setItem("document-ledger.notifications", JSON.stringify(items.slice(0, 200))); }
 function formatSize(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
 type ExpiryState = { days: number; kind: "expired" | "today" | "due-soon" | "active" | "safe"; label: string };
 function expiryState(expiresAt: number | null): ExpiryState | null {
