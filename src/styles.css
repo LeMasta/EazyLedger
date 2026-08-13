@@ -414,7 +414,7 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 
 @media (max-width: 1180px) {
   .workspace.with-preview { grid-template-columns: 210px minmax(380px, 1fr) 290px; }
-  .list-header, .file-row { grid-template-columns: 24px minmax(250px, 1fr) 105px 76px 30px; }
+  .list-header, .file-row { grid-template-columns: 24px minmax(250px, 1fr) 105px 76px; }
   .commandbar > button { padding: 0 6px; }
 }
 
@@ -487,3 +487,79 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .notification-empty strong { color: #657181; font-size: 12px; }
 .notification-empty span { font-size: 10px; }
 .notification-center > footer { padding: 0 14px; display: flex; align-items: center; border-top: 1px solid #e0e5ec; color: #8a95a2; background: white; font-size: 9px; }
+
+/* v0.4.7: unified Fluent shell, compact file actions and application dialogs */
+:root {
+  --blue: #0f6cbd;
+  --blue-soft: #eaf3ff;
+  --border: #d9dfe7;
+  --muted: #667384;
+  --panel: #ffffff;
+}
+
+button, input, textarea, select { font: inherit; }
+.app-shell { grid-template-rows: 38px 48px 44px minmax(0, 1fr); background: #f3f5f8; }
+.tabs { padding-left: 10px; background: #f3f5f8; }
+.tab { border-radius: 7px 7px 0 0; background: #e8ecf1; }
+.tab.active { background: #fff; }
+.toolbar, .commandbar { background: #fff; }
+.commandbar { padding-inline: 14px; }
+.commandbar button { border-radius: 5px; }
+.commandbar button.primary { color: #075a9d; background: #e7f2fc; }
+
+.sidebar { padding-top: 10px; background: #f7f8fa; }
+.sidebar-section { margin-bottom: 10px; }
+.sidebar-section.collapsed { margin-bottom: 4px; }
+.sidebar-section > header { height: 32px; padding: 0 5px; text-transform: none; letter-spacing: 0; }
+.sidebar-section > header .sidebar-section-toggle { min-width: 0; flex: 1; padding: 0 5px; display: flex; justify-content: flex-start; gap: 6px; color: #536174; font-weight: 600; }
+.sidebar-section > header .sidebar-section-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row, .tag-row { border-radius: 6px; }
+.tree-row:hover, .tag-row:hover { background: #e9edf2; }
+.tree-row.selected, .tag-row.selected { color: #075a9d; background: #e1efff; }
+
+.selection-bar { min-height: 40px; padding-inline: 12px; border-color: #c8ddf4; background: #edf6ff; }
+.selection-bar strong { margin-right: 4px; color: #075a9d; }
+.selection-bar button { padding-inline: 9px; border-color: transparent; background: transparent; }
+.selection-bar button:hover { border-color: #c5d7eb; background: #fff; }
+.selection-bar .selection-close { margin-left: auto; }
+.list-header, .file-row { grid-template-columns: 24px minmax(340px, 1fr) 126px 76px; }
+.list-header { min-height: 38px; color: #596678; background: #fbfcfd; }
+.file-list { padding-top: 5px; }
+.file-row { min-height: 52px; border-radius: 7px; }
+.file-row:hover { background: #f0f5fa; }
+.file-row.selected { background: #e9f3ff; outline-color: #bdd9fa; }
+.sort-heading > button:first-child { font-weight: 600; color: #3f4b5b; }
+
+.setting-actions { display: flex !important; flex-wrap: wrap; }
+.setting-row code { border: 1px solid #e0e5eb; background: #f5f7f9; }
+
+.app-dialog { width: min(440px, calc(100vw - 40px)); overflow: hidden; border: 1px solid #cfd7e2; border-radius: 13px; background: #fff; box-shadow: 0 24px 80px #11182752; animation: dialog-in .14s ease-out; }
+@keyframes dialog-in { from { opacity: .7; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: none; } }
+.app-dialog > header { min-height: 86px; padding: 17px 18px 14px; display: grid; grid-template-columns: 38px minmax(0, 1fr) 28px; align-items: start; gap: 11px; border-bottom: 1px solid #e7ebf0; background: #fafbfd; }
+.dialog-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; color: #0f6cbd; background: #e5f2ff; }
+.danger-dialog .dialog-icon { color: #b4232d; background: #fdebed; }
+.app-dialog h2 { margin: 1px 0 4px; color: #202832; font-size: 17px; }
+.app-dialog p { margin: 0; color: #6f7b8a; font-size: 11px; line-height: 1.55; }
+.app-dialog > header > button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #667384; }
+.app-dialog > header > button:hover { background: #e9edf2; }
+.dialog-field { padding: 18px; display: grid; gap: 7px; color: #465263; font-size: 12px; }
+.dialog-field input, .dialog-field select { width: 100%; height: 38px; padding: 0 10px; border: 1px solid #bec8d5; border-radius: 7px; outline: none; background: #fff; color: #202832; }
+.dialog-field input:focus, .dialog-field select:focus { border-color: #0f6cbd; box-shadow: 0 0 0 2px #0f6cbd22; }
+.dialog-field small { color: #8290a0; font-size: 10px; }
+.dialog-note { margin: 17px 18px 3px; padding: 10px 11px; display: flex; align-items: center; gap: 8px; border-radius: 7px; color: #6a5325; background: #fff7e6; font-size: 11px; }
+.app-dialog > footer { padding: 14px 18px 17px; display: flex; justify-content: flex-end; gap: 8px; }
+.app-dialog > footer button { min-width: 82px; height: 34px; padding: 0 13px; border: 1px solid #c5ced9; border-radius: 6px; background: #fff; color: #364252; }
+.app-dialog > footer button.primary { border-color: #0f6cbd; background: #0f6cbd; color: #fff; }
+.app-dialog > footer button.danger-primary { border-color: #c42b36; background: #c42b36; color: #fff; }
+.app-dialog > footer button:disabled { opacity: .45; }
+
+.unsupported { max-width: 300px; padding: 22px; text-align: center; }
+.unsupported strong { color: #4c5868; font-size: 12px; }
+.unsupported span { color: #7d8998; line-height: 1.55; }
+.docx-preview { width: 100%; height: 100%; overflow: auto; background: #dfe3e8; }
+.docx-preview > .preview-loading { min-height: 100%; display: grid; place-items: center; }
+.docx-preview > div { min-width: min-content; padding: 18px; }
+.docx-preview .docx-wrapper { padding: 16px !important; background: #dfe3e8 !important; }
+.docx-preview .docx-wrapper > section.docx { margin: 0 auto 16px !important; box-shadow: 0 3px 14px #1720332d !important; }
+.preview-box:has(.docx-preview) { display: block; }
+.preview-fullscreen .docx-preview > div { padding: 24px; }
