@@ -45,6 +45,9 @@ export const api = {
   async revealDocument(id: string): Promise<void> {
     if (desktop) await invoke("reveal_document", { id });
   },
+  async revealVault(): Promise<void> {
+    if (desktop) await invoke("reveal_vault");
+  },
   async getPreview(id: string): Promise<Preview> {
     if (desktop) {
       const result = await invoke<Preview>("get_preview", { id });
@@ -128,7 +131,7 @@ export const api = {
   },
   async exportManifest(): Promise<boolean> {
     if (!desktop) return false;
-    const destination = await save({ title: "导出台账清单", defaultPath: "资料台账清单.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+    const destination = await save({ title: "导出 EazyLedger 清单", defaultPath: "EazyLedger-清单.json", filters: [{ name: "JSON", extensions: ["json"] }] });
     if (!destination) return false;
     await invoke("export_manifest", { destination });
     return true;

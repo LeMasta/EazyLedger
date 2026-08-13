@@ -34,9 +34,9 @@ export type BootstrapData = {
 };
 
 export type Preview =
-  | { kind: "image" | "pdf"; path: string; text?: never }
-  | { kind: "text" | "docx"; text: string; path?: never }
-  | { kind: "unsupported"; text?: never; path?: never };
+  | { kind: "image" | "pdf" | "docx"; path: string; text?: never; reason?: never }
+  | { kind: "text"; text: string; path?: never; reason?: never }
+  | { kind: "unsupported"; reason?: string; text?: never; path?: never };
 
 export type AppTab = {
   id: string;

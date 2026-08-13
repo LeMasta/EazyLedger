@@ -4,6 +4,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    env,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -79,8 +80,8 @@ enum Preview {
     Image { path: String },
     Pdf { path: String },
     Text { text: String },
-    Docx { text: String },
-    Unsupported,
+    Docx { path: String },
+    Unsupported { reason: String },
 }
 
 pub fn run() {
@@ -114,6 +115,7 @@ pub fn run() {
             import_paths,
             open_document,
             reveal_document,
+            reveal_vault,
             get_preview,
             create_node,
             rename_node,
@@ -138,7 +140,7 @@ pub fn run() {
             change_vault_location
         ])
         .run(tauri::generate_context!())
-        .expect("资料台账启动失败");
+        .expect("EazyLedger 启动失败");
 }
 
 fn read_configured_vault(config_path: &Path) -> Option<PathBuf> {
@@ -420,6 +422,11 @@ fn reveal_document(id: String, state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reveal_vault(state: State<AppState>) -> Result<(), String> {
+    open::that(&state.vault_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
     let connection = open_db(&state.vault_path)?;
     let (extension, relative_path, text): (String, String, String) = connection
@@ -429,10 +436,56 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Ok(Preview::Image { path }),
         "pdf" => Ok(Preview::Pdf { path }),
-        "docx" => Ok(Preview::Docx { text }),
+        "docx" => Ok(Preview::Docx { path }),
+        "doc" => match convert_legacy_doc_preview(&id, Path::new(&path), &state.vault_path) {
+            Ok(preview_path) => Ok(Preview::Pdf { path: preview_path.to_string_lossy().to_string() }),
+            Err(reason) => Ok(Preview::Unsupported { reason }),
+        },
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
-        _ => Ok(Preview::Unsupported),
+        _ => Ok(Preview::Unsupported { reason: "该格式尚未接入内置预览器".into() }),
     }
+}
+
+fn convert_legacy_doc_preview(id: &str, source: &Path, vault: &Path) -> Result<PathBuf, String> {
+    let cache_dir = vault.join("preview-cache").join(id);
+    let cached_pdf = cache_dir.join("preview.pdf");
+    if preview_is_fresh(source, &cached_pdf) { return Ok(cached_pdf); }
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+
+    let mut candidates = Vec::<PathBuf>::new();
+    for variable in ["PROGRAMFILES", "PROGRAMFILES(X86)"] {
+        if let Some(directory) = env::var_os(variable) {
+            candidates.push(PathBuf::from(directory).join("LibreOffice").join("program").join("soffice.exe"));
+        }
+    }
+    candidates.push(PathBuf::from("soffice"));
+    candidates.push(PathBuf::from("libreoffice"));
+
+    for executable in candidates {
+        if executable.is_absolute() && !executable.exists() { continue; }
+        let status = Command::new(&executable)
+            .args(["--headless", "--convert-to", "pdf", "--outdir"])
+            .arg(&cache_dir)
+            .arg(source)
+            .status();
+        if !matches!(status, Ok(value) if value.success()) { continue; }
+        let generated = cache_dir
+            .join(source.file_stem().and_then(|value| value.to_str()).unwrap_or("document"))
+            .with_extension("pdf");
+        if !generated.exists() { continue; }
+        if generated != cached_pdf {
+            fs::copy(&generated, &cached_pdf).map_err(|error| error.to_string())?;
+            let _ = fs::remove_file(generated);
+        }
+        return Ok(cached_pdf);
+    }
+    Err("旧版 DOC 需要 LibreOffice 才能生成预览。安装 LibreOffice 后重新选择文件，或使用默认程序打开。".into())
+}
+
+fn preview_is_fresh(source: &Path, preview: &Path) -> bool {
+    let Ok(source_modified) = fs::metadata(source).and_then(|value| value.modified()) else { return false; };
+    let Ok(preview_modified) = fs::metadata(preview).and_then(|value| value.modified()) else { return false; };
+    preview_modified >= source_modified
 }
 
 #[tauri::command]

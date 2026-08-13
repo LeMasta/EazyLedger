@@ -2,7 +2,7 @@ import type { BootstrapData, DocumentItem, Preview } from "./types";
 
 const now = Date.now();
 export const demoData: BootstrapData = {
-  vaultPath: "D:\\资料台账",
+  vaultPath: "D:\\EazyLedger",
   nodes: [
     { id: "root", parentId: null, name: "全部资料", sortOrder: 0, documentCount: 6 },
     { id: "bid", parentId: "root", name: "投标台账", sortOrder: 0, documentCount: 4 },
@@ -34,7 +34,7 @@ demoData.documents = [
 
 export function demoPreview(document: DocumentItem): Preview {
   if (document.extension === "docx") {
-    return { kind: "docx", text: `${document.name}\n\n这是 DOCX 基础预览示例。桌面版会读取文档正文、段落和表格文字。\n\n${document.notes || "暂无备注。"}` };
+    return { kind: "text", text: `${document.name}\n\n这是浏览器演示模式的 DOCX 文本预览。桌面版会使用分页 Word 渲染器。\n\n${document.notes || "暂无备注。"}` };
   }
   return { kind: "unsupported" };
 }
