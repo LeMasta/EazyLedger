@@ -589,7 +589,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .tab { position: relative; width: 176px; height: 30px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; cursor: pointer; }
 .tab:hover { background: rgba(255,255,255,.58); }
 .tab.active { border-color: #d3d9e1; background: rgba(255,255,255,.94); box-shadow: 0 1px 3px rgba(23,34,49,.08); }
-.tab.active::after { content: ""; position: absolute; left: 38%; right: 38%; bottom: -4px; height: 2px; border-radius: 2px; background: var(--blue); }
+.tab.active::after { content: ""; position: absolute; left: 38%; right: 38%; bottom: 1px; height: 3px; border-radius: 2px; background: var(--blue); }
 .new-tab { margin: 0; border-radius: 7px; }
 
 .toolbar { padding: 7px 14px; border-bottom: 1px solid var(--border-soft); background: rgba(255,255,255,.93); }
@@ -608,8 +608,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sidebar { padding: 10px 7px; border-right-color: #d5dbe3; background: #f1f3f6; }
 .sidebar-section > header { color: #4f5c6c; }
 .sidebar-section > header .sidebar-section-toggle { font-size: 12px; }
-.tree-row, .tag-row { min-height: 32px; border-radius: 7px; }
-.tree-row::before, .tag-row::before { content: ""; width: 3px; height: 16px; margin-right: -3px; border-radius: 2px; background: transparent; }
+.tree-row, .tag-row { position: relative; min-height: 32px; border-radius: 7px; }
+.tree-row::before, .tag-row::before { content: ""; position: absolute; left: 2px; top: 50%; width: 3px; height: 16px; margin: 0; border-radius: 2px; background: transparent; transform: translateY(-50%); }
 .tree-row:hover, .tag-row:hover { background: #e5e9ee; }
 .tree-row.selected, .tag-row.selected { color: #075a9d; background: #dcecf9; }
 .tree-row.selected::before, .tag-row.selected::before { background: var(--blue); }
@@ -631,7 +631,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .preview-pane { border-left-color: #d3dae3; background: #f1f3f6; }
 .preview-pane > header { min-height: 62px; border-bottom-color: #d8dee6; background: rgba(255,255,255,.84); }
-.preview-box { margin: 14px; border-color: #d3d9e1; border-radius: 10px; box-shadow: var(--shadow-card); }
+.preview-box { position: relative; margin: 14px; border-color: #d3d9e1; border-radius: 10px; box-shadow: var(--shadow-card); }
+.preview-zoom-capture { position: absolute; z-index: 5; inset: 0; cursor: zoom-in; background: transparent; }
 .preview-toolbar { border-color: #d6dce4; border-radius: 9px; box-shadow: var(--shadow-card); }
 .properties { margin: 0 12px 14px; padding: 1px 12px 13px; border: 1px solid #dce1e7; border-radius: 10px; background: white; box-shadow: var(--shadow-card); }
 .properties textarea { border-radius: 7px; background: #fbfcfd; }
