@@ -18,6 +18,27 @@ use walkdir::WalkDir;
 
 const ROOT_NODE_ID: &str = "root";
 
+fn is_ignored_system_entry(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else { return false; };
+    let lower = name.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "thumbs.db"
+            | "ehthumbs.db"
+            | "desktop.ini"
+            | ".ds_store"
+            | ".directory"
+            | "icon\r"
+            | "$recycle.bin"
+            | "system volume information"
+            | "__macosx"
+            | ".spotlight-v100"
+            | ".trashes"
+            | ".fseventsd"
+    ) || lower.starts_with("._")
+        || lower.starts_with("~$")
+}
+
 struct AppState {
     vault_path: PathBuf,
     config_path: PathBuf,
@@ -297,6 +318,9 @@ fn import_paths(
     }
     for raw in paths {
         let path = PathBuf::from(raw);
+        if is_ignored_system_entry(&path) {
+            continue;
+        }
         if path.is_dir() {
             import_directory_tree(&connection, &state.vault_path, &path, &node_id, &mode)?;
         } else if path.is_file() {
@@ -328,7 +352,12 @@ fn import_directory_tree(
     let mut node_by_path: HashMap<PathBuf, String> = HashMap::new();
     node_by_path.insert(source_root.to_path_buf(), root_node_id);
 
-    for entry in WalkDir::new(source_root).min_depth(1).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(source_root)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored_system_entry(entry.path()))
+        .filter_map(Result::ok)
+    {
         let path = entry.path().to_path_buf();
         let parent_path = path.parent().ok_or("无法识别上级目录")?;
         let parent_node_id = node_by_path
@@ -373,6 +402,9 @@ fn unique_node_name(connection: &Connection, parent_id: &str, requested_name: &s
 }
 
 fn import_one(connection: &Connection, vault: &Path, source: &Path, node_id: &str, mode: &str) -> Result<(), String> {
+    if is_ignored_system_entry(source) {
+        return Ok(());
+    }
     let name = source.file_name().and_then(|value| value.to_str()).ok_or("文件名无法识别")?.to_string();
     let id = Uuid::new_v4().to_string();
     let directory = vault.join("files").join(&id);
@@ -798,6 +830,9 @@ fn load_nodes(connection: &Connection) -> Result<Vec<NodeItem>, String> {
     let mut statement = connection.prepare(
         "SELECT n.id, n.parent_id, n.name, n.sort_order, COUNT(d.id)
          FROM nodes n LEFT JOIN documents d ON d.node_id=n.id
+           AND lower(d.display_name) NOT IN ('thumbs.db', 'ehthumbs.db', 'desktop.ini', '.ds_store', '.directory', 'icon' || char(13))
+           AND substr(lower(d.display_name), 1, 2) <> '._'
+           AND substr(lower(d.display_name), 1, 2) <> '~$'
          GROUP BY n.id ORDER BY n.sort_order, n.name"
     ).map_err(|error| error.to_string())?;
     let rows = statement.query_map([], |row| Ok(NodeItem { id: row.get(0)?, parent_id: row.get(1)?, name: row.get(2)?, sort_order: row.get(3)?, document_count: row.get(4)? })).map_err(|error| error.to_string())?;
@@ -812,7 +847,14 @@ fn load_nodes(connection: &Connection) -> Result<Vec<NodeItem>, String> {
 
 fn load_tags(connection: &Connection) -> Result<Vec<TagItem>, String> {
     let mut statement = connection.prepare(
-        "SELECT t.id, t.name, t.color, COUNT(dt.document_id) FROM tags t LEFT JOIN document_tags dt ON dt.tag_id=t.id GROUP BY t.id ORDER BY t.name"
+        "SELECT t.id, t.name, t.color, COUNT(d.id)
+         FROM tags t
+         LEFT JOIN document_tags dt ON dt.tag_id=t.id
+         LEFT JOIN documents d ON d.id=dt.document_id
+           AND lower(d.display_name) NOT IN ('thumbs.db', 'ehthumbs.db', 'desktop.ini', '.ds_store', '.directory', 'icon' || char(13))
+           AND substr(lower(d.display_name), 1, 2) <> '._'
+           AND substr(lower(d.display_name), 1, 2) <> '~$'
+         GROUP BY t.id ORDER BY t.name"
     ).map_err(|error| error.to_string())?;
     let rows = statement.query_map([], |row| Ok(TagItem { id: row.get(0)?, name: row.get(1)?, color: row.get(2)?, document_count: row.get(3)? })).map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
@@ -824,7 +866,7 @@ fn load_documents(connection: &Connection) -> Result<Vec<DocumentItem>, String> 
     ).map_err(|error| error.to_string())?;
     let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, Option<i64>>(8)?))).map_err(|error| error.to_string())?;
     let raw = rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-    raw.into_iter().map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at)| {
+    raw.into_iter().filter(|(_, _, name, _, _, _, _, _, _)| !is_ignored_system_entry(Path::new(name))).map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at)| {
         Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at })
     }).collect()
 }
@@ -927,4 +969,20 @@ fn now_ms() -> i64 {
 
 fn modified_ms(metadata: &fs::Metadata) -> i64 {
     metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map(|duration| duration.as_millis() as i64).unwrap_or_else(now_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ignored_system_entry;
+    use std::path::Path;
+
+    #[test]
+    fn filters_known_system_clutter_without_hiding_normal_files() {
+        for name in ["Thumbs.db", "THUMBS.DB", "desktop.ini", ".DS_Store", "._合同.docx", "~$合同.docx", "__MACOSX"] {
+            assert!(is_ignored_system_entry(Path::new(name)), "{name} should be ignored");
+        }
+        for name in ["合同.docx", ".env.example", "thumbnail.png", "desktop-notes.txt"] {
+            assert!(!is_ignored_system_entry(Path::new(name)), "{name} should remain visible");
+        }
+    }
 }
