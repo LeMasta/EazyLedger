@@ -1,0 +1,28 @@
+[package]
+name = "document-ledger"
+version = "0.4.8"
+description = "EazyLedger Windows 本地资料管理工具"
+authors = ["Document Ledger Contributors"]
+edition = "2021"
+
+[lib]
+name = "document_ledger_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+zip = "2"
+regex = "1"
+notify = "7"
+open = "5"
