@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import type { AppTab, BootstrapData, DocumentItem, NodeItem, Preview, Tag } from "./types";
-import { currentVersion, findUpdate, installPendingUpdate, type AvailableUpdate } from "./updater";
+import { currentVersion, describeUpdateFailure, findUpdate, installPendingUpdate, type AvailableUpdate, type UpdateFailure } from "./updater";
 
 const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "" };
 const tagColors = [
@@ -46,6 +46,8 @@ type UpdateUiState = {
   info?: AvailableUpdate;
   message?: string;
   percent?: number | null;
+  failure?: UpdateFailure;
+  lastCheckedAt?: number;
 };
 type AppDialogState =
   | { kind: "input"; title: string; description: string; initialValue?: string; placeholder?: string; confirmLabel: string; onConfirm: (value: string) => void }
@@ -76,7 +78,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.4.7");
+  const [appVersion, setAppVersion] = useState("0.4.8");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [notifications, setNotifications] = useState<LedgerNotification[]>(readNotifications);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
@@ -119,14 +121,21 @@ export default function App() {
       setUpdateUi({ phase: "current", message: "浏览器预览模式不检查桌面更新" });
       return;
     }
-    setUpdateUi({ phase: "checking", message: "正在连接 GitHub 检查新版本…" });
+    setUpdateUi({ phase: "checking", message: "正在连接 GitHub 更新服务…" });
+    const slowTimer = window.setTimeout(() => setUpdateUi((current) => current.phase === "checking"
+      ? { ...current, message: "GitHub 响应较慢，仍在等待（最长 25 秒）…" }
+      : current), 4_000);
     try {
       const info = await findUpdate();
-      if (info) setUpdateUi({ phase: "available", info, message: `发现新版本 ${info.version}` });
-      else setUpdateUi({ phase: "current", message: "当前已是最新版本" });
+      const lastCheckedAt = Date.now();
+      if (info) setUpdateUi({ phase: "available", info, lastCheckedAt, message: `已连接 GitHub，发现新版本 ${info.version}` });
+      else setUpdateUi({ phase: "current", lastCheckedAt, message: "已连接 GitHub；当前已是最新版本" });
     } catch (reason) {
-      if (manual) setUpdateUi({ phase: "error", message: `检查失败：${String(reason)}` });
-      else setUpdateUi({ phase: "idle" });
+      const failure = describeUpdateFailure(reason);
+      setUpdateUi({ phase: "error", failure, lastCheckedAt: Date.now(), message: failure.message });
+      if (!manual) console.info("EazyLedger automatic update check failed", failure.detail);
+    } finally {
+      window.clearTimeout(slowTimer);
     }
   }, []);
 
@@ -139,7 +148,8 @@ export default function App() {
         setUpdateUi({ phase: "downloading", info, percent: progress.percent, message: progress.percent === null ? "正在下载更新…" : `正在下载更新… ${progress.percent}%` });
       });
     } catch (reason) {
-      setUpdateUi({ phase: "error", info, message: `安装失败：${String(reason)}` });
+      const failure = describeUpdateFailure(reason);
+      setUpdateUi({ phase: "error", info, failure, message: `安装未完成：${failure.message}` });
     }
   }, [updateUi.info]);
 
@@ -825,7 +835,7 @@ function SettingsView({ vaultPath, previewOpen, notice, appVersion, updateUi, on
     <section className="settings-group"><header><Database size={19} /><div><h2>资料库存放位置</h2><p>数据库、导入副本、预览缓存和应用回收站</p></div></header><div className="setting-row vertical"><div><strong>当前资料库</strong><code title={vaultPath}>{vaultPath}</code></div><div className="setting-actions"><button onClick={() => void onRevealVault()}><FolderOpen size={14} />打开资料库文件夹</button><button className="secondary" onClick={() => void onBackup()}><Archive size={14} />创建完整备份</button><button className="secondary" onClick={() => void onChangeVault()}>迁移到新位置</button><button className="secondary" onClick={onRequestEmptyVault}>使用空资料库</button></div><small>切换会在重启应用后生效；旧资料库不会自动删除。</small></div></section>
     <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label></section>
     <section className="settings-group"><header><Files size={19} /><div><h2>文件管理</h2><p>当前版本的安全策略</p></div></header><div className="setting-row"><div><strong>删除方式</strong><small>文件先移入应用资料库的 trash 目录，不立即物理删除</small></div><span className="setting-value">应用回收站</span></div><div className="setting-row"><div><strong>导入方式</strong><small>默认复制进资料库，原文件保留</small></div><span className="setting-value">复制</span></div></section>
-    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>{updateUi.message ?? "应用启动后会自动检查一次，也可以随时手动检查"}</small>{updateUi.info?.notes && <small className="update-notes">{updateUi.info.notes}</small>}</div>{updateUi.phase === "downloading" && <div className="update-progress"><span style={{ width: `${updateUi.percent ?? 15}%` }} /></div>}<div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />{updateUi.phase === "checking" ? "正在检查" : "检查更新"}</button>{updateUi.phase === "available" && <button onClick={() => void onInstallUpdate()}><Download size={14} />下载并安装 v{updateUi.info?.version}</button>}</div><small>安装前请保存正在编辑的文件。资料库和数据库不会随程序更新被覆盖。</small></div></section>
+    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>应用启动后会自动检查一次，也可以随时手动检查</small></div><div className={`update-status ${updateUi.phase}`}><span>{updateUi.phase === "error" ? <AlertTriangle size={17} /> : updateUi.phase === "current" ? <Check size={17} /> : <RefreshCw className={updateUi.phase === "checking" ? "spinning" : ""} size={17} />}</span><div><strong>{updateUi.failure?.title ?? (updateUi.phase === "checking" ? "正在检查更新" : updateUi.phase === "current" ? "更新服务连接正常" : updateUi.phase === "available" ? "发现可用更新" : updateUi.phase === "downloading" ? "正在下载并校验" : "尚未检查更新")}</strong><small>{updateUi.message ?? "点击“检查更新”验证与 GitHub 的连接"}</small>{updateUi.lastCheckedAt && <small>上次尝试：{formatDate(updateUi.lastCheckedAt, true)}</small>}{updateUi.failure && <details><summary>技术信息</summary><code>{updateUi.failure.detail}</code></details>}</div></div>{updateUi.info?.notes && <small className="update-notes">{updateUi.info.notes}</small>}{updateUi.phase === "downloading" && <div className="update-progress"><span style={{ width: `${updateUi.percent ?? 15}%` }} /></div>}<div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />{updateUi.phase === "checking" ? "等待 GitHub" : updateUi.phase === "error" ? "重新检查" : "检查更新"}</button>{updateUi.phase === "available" && <button onClick={() => void onInstallUpdate()}><Download size={14} />下载并安装 v{updateUi.info?.version}</button>}</div><small>安装前请保存正在编辑的文件。资料库和数据库不会随程序更新被覆盖。</small></div></section>
   </section>;
 }
 
