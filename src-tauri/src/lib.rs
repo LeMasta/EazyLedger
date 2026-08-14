@@ -84,6 +84,7 @@ struct DocumentItem {
     notes: String,
     tags: Vec<TagItem>,
     expires_at: Option<i64>,
+    starred: bool,
 }
 
 #[derive(Serialize)]
@@ -152,6 +153,7 @@ pub fn run() {
             remove_tags_from_documents,
             update_notes,
             update_expiry,
+            set_document_starred,
             rename_document,
             move_documents,
             copy_documents,
@@ -223,6 +225,7 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_documents_modified ON documents(modified_at DESC);"
     ).map_err(|error| error.to_string())?;
     ensure_document_expiry_column(&connection)?;
+    ensure_document_starred_column(&connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO nodes(id, parent_id, name, sort_order, created_at) VALUES(?1, NULL, '全部资料', 0, ?2)",
         params![ROOT_NODE_ID, now_ms()],
@@ -230,15 +233,24 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_document_expiry_column(connection: &Connection) -> Result<(), String> {
+fn document_columns(connection: &Connection) -> Result<Vec<String>, String> {
     let mut statement = connection.prepare("PRAGMA table_info(documents)").map_err(|error| error.to_string())?;
-    let columns = statement
+    let rows = statement
         .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    if !columns.iter().any(|column| column == "expires_at") {
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+}
+
+fn ensure_document_expiry_column(connection: &Connection) -> Result<(), String> {
+    if !document_columns(connection)?.iter().any(|column| column == "expires_at") {
         connection.execute("ALTER TABLE documents ADD COLUMN expires_at INTEGER", []).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn ensure_document_starred_column(connection: &Connection) -> Result<(), String> {
+    if !document_columns(connection)?.iter().any(|column| column == "starred") {
+        connection.execute("ALTER TABLE documents ADD COLUMN starred INTEGER NOT NULL DEFAULT 0", []).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -687,6 +699,14 @@ fn update_expiry(document_id: String, expires_at: Option<i64>, state: State<AppS
 }
 
 #[tauri::command]
+fn set_document_starred(document_id: String, starred: bool, state: State<AppState>) -> Result<(), String> {
+    open_db(&state.vault_path)?
+        .execute("UPDATE documents SET starred=?1 WHERE id=?2", params![starred as i64, document_id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn rename_document(id: String, name: String, state: State<AppState>) -> Result<(), String> {
     validate_file_name(&name)?;
     let connection = open_db(&state.vault_path)?;
@@ -862,12 +882,12 @@ fn load_tags(connection: &Connection) -> Result<Vec<TagItem>, String> {
 
 fn load_documents(connection: &Connection) -> Result<Vec<DocumentItem>, String> {
     let mut statement = connection.prepare(
-        "SELECT id, node_id, display_name, extension, size, modified_at, relative_path, notes, expires_at FROM documents ORDER BY modified_at DESC"
+        "SELECT id, node_id, display_name, extension, size, modified_at, relative_path, notes, expires_at, starred FROM documents ORDER BY starred DESC, modified_at DESC"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, Option<i64>>(8)?))).map_err(|error| error.to_string())?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, i64>(9)? != 0))).map_err(|error| error.to_string())?;
     let raw = rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-    raw.into_iter().filter(|(_, _, name, _, _, _, _, _, _)| !is_ignored_system_entry(Path::new(name))).map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at)| {
-        Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at })
+    raw.into_iter().filter(|(_, _, name, _, _, _, _, _, _, _)| !is_ignored_system_entry(Path::new(name))).map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at, starred)| {
+        Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at, starred })
     }).collect()
 }
 

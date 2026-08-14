@@ -114,6 +114,10 @@ export const api = {
     if (desktop) await invoke("update_expiry", { documentId, expiresAt });
     else demo.documents.find((d) => d.id === documentId)!.expiresAt = expiresAt;
   },
+  async setDocumentStarred(documentId: string, starred: boolean): Promise<void> {
+    if (desktop) await invoke("set_document_starred", { documentId, starred });
+    else demo.documents.find((d) => d.id === documentId)!.starred = starred;
+  },
   async renameDocument(id: string, name: string): Promise<void> {
     if (desktop) await invoke("rename_document", { id, name });
     else demo.documents.find((document) => document.id === id)!.name = name;

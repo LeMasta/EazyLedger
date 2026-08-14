@@ -48,4 +48,5 @@ jobs:
             首次安装请下载 EXE 安装程序；v0.4.0 及更高版本可在应用的“设置 → 软件更新”中完成后续更新。
           releaseDraft: true
           prerelease: false
+          retryAttempts: 2
 

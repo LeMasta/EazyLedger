@@ -5,7 +5,7 @@ import { renderAsync } from "docx-preview";
 import {
   AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Bell, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight, History,
   ClipboardPaste, Copy, Download, File, FileImage, FilePlus2, FileText, Folder, FolderInput,
-  FolderOpen, FolderPlus, HardDrive, Image, Import, Info, Maximize2, MoreHorizontal, PanelRightClose,
+  FolderOpen, FolderPlus, HardDrive, Image, Import, Info, Maximize2, MoreHorizontal, PanelRightClose, Star,
   PanelRightOpen, Pencil, Plus, RefreshCw, RotateCcw, RotateCw, Scissors, Search, Tags, Trash2, X, House, Files, Settings, Database, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { api } from "./api";
@@ -78,7 +78,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.4.9");
+  const [appVersion, setAppVersion] = useState("0.5.0");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [notifications, setNotifications] = useState<LedgerNotification[]>(readNotifications);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
@@ -129,18 +129,21 @@ export default function App() {
       setUpdateUi({ phase: "current", message: "浏览器预览模式不检查桌面更新" });
       return;
     }
+    const startedAt = performance.now();
     setUpdateUi({ phase: "checking", message: "正在连接 GitHub 更新服务…" });
     const slowTimer = window.setTimeout(() => setUpdateUi((current) => current.phase === "checking"
-      ? { ...current, message: "GitHub 响应较慢，仍在等待（最长 25 秒）…" }
-      : current), 4_000);
+      ? { ...current, message: "GitHub 仍在响应，检查会在 12 秒内结束…" }
+      : current), 1_500);
     try {
       const info = await findUpdate();
       const lastCheckedAt = Date.now();
-      if (info) setUpdateUi({ phase: "available", info, lastCheckedAt, message: `已连接 GitHub，发现新版本 ${info.version}` });
-      else setUpdateUi({ phase: "current", lastCheckedAt, message: "已连接 GitHub；当前已是最新版本" });
+      const elapsed = formatElapsed(performance.now() - startedAt);
+      if (info) setUpdateUi({ phase: "available", info, lastCheckedAt, message: `已连接 GitHub（${elapsed}），发现新版本 ${info.version}` });
+      else setUpdateUi({ phase: "current", lastCheckedAt, message: `已连接 GitHub（${elapsed}）；当前已是最新版本` });
     } catch (reason) {
       const failure = describeUpdateFailure(reason);
-      setUpdateUi({ phase: "error", failure, lastCheckedAt: Date.now(), message: failure.message });
+      const elapsed = formatElapsed(performance.now() - startedAt);
+      setUpdateUi({ phase: "error", failure, lastCheckedAt: Date.now(), message: `${failure.message}（耗时 ${elapsed}）` });
       if (!manual) console.info("EazyLedger automatic update check failed", failure.detail);
     } finally {
       window.clearTimeout(slowTimer);
@@ -172,8 +175,7 @@ export default function App() {
   useEffect(() => {
     if (!api.isDesktop) return;
     void currentVersion().then(setAppVersion).catch(() => undefined);
-    const timer = window.setTimeout(() => void checkForUpdates(false), 1800);
-    return () => window.clearTimeout(timer);
+    void checkForUpdates(false);
   }, [checkForUpdates]);
 
   useEffect(() => {
@@ -584,6 +586,13 @@ export default function App() {
     });
   }
 
+  async function toggleDocumentStar(document: DocumentItem) {
+    await runAction(async () => {
+      await api.setDocumentStarred(document.id, !document.starred);
+      await refreshAll();
+    });
+  }
+
   function setSort(next: SortKey) {
     if (next === sortKey) setSortAscending((value) => !value);
     else { setSortKey(next); setSortAscending(next !== "modified"); }
@@ -640,7 +649,7 @@ export default function App() {
       <button onClick={openSettings}><Settings size={16} />设置</button>
       <button onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}{previewOpen ? "隐藏预览" : "显示预览"}</button>
     </section>
-    {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onRevealVault={() => runAction(() => api.revealVault())} onBackup={() => runAction(async () => { await api.createBackup(); })} onRequestEmptyVault={() => setDialog({ kind: "confirm", title: "使用空资料库？", description: "新位置将创建空资料库，现有资料仍完整保留在旧位置。切换将在重启后生效。", confirmLabel: "继续选择位置", onConfirm: () => void runAction(async () => { const result = await api.changeVaultLocation(false); if (result) setSettingsNotice(result); }) })} onChangeVault={() => runAction(async () => { const result = await api.changeVaultLocation(true); if (result) setSettingsNotice(result); })} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
+    {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => Number(b.starred) - Number(a.starred) || b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onRevealVault={() => runAction(() => api.revealVault())} onBackup={() => runAction(async () => { await api.createBackup(); })} onRequestEmptyVault={() => setDialog({ kind: "confirm", title: "使用空资料库？", description: "新位置将创建空资料库，现有资料仍完整保留在旧位置。切换将在重启后生效。", confirmLabel: "继续选择位置", onConfirm: () => void runAction(async () => { const result = await api.changeVaultLocation(false); if (result) setSettingsNotice(result); }) })} onChangeVault={() => runAction(async () => { const result = await api.changeVaultLocation(true); if (result) setSettingsNotice(result); })} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
       <aside className="sidebar custom-scrollbar">
         <SidebarSection storageKey="ledger-tree" title="台账架构" action={<FolderPlus size={14} />} onAction={() => void addNode()}>
           <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} dropTarget={pointerDropTarget} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
@@ -664,21 +673,22 @@ export default function App() {
         </div>}
         <div className="list-header">
           <input type="checkbox" checked={documents.length > 0 && selectedIds.size === documents.length} onChange={(event) => setSelectedIds(event.target.checked ? new Set(documents.map((item) => item.id)) : new Set())} />
-          <span className="sort-heading"><button onClick={() => setSort("name")}>文件 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button>
+          <span className="sort-heading"><button onClick={() => setSort("name")}>文件 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button><span className="star-column" title="星标文件始终置顶"><Star size={13} /></span>
         </div>
         <div className="file-list custom-scrollbar">
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
             return <div
-              className={`file-row ${selectedIds.has(document.id) ? "selected" : ""} ${pointerDrag?.kind === "files" && pointerDrag.ids.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
+              className={`file-row ${document.starred ? "starred" : ""} ${selectedIds.has(document.id) ? "selected" : ""} ${pointerDrag?.kind === "files" && pointerDrag.ids.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
               key={document.id} onPointerDown={(event) => beginFilePointerDrag(event, document)}
               onClick={(event) => { if (!suppressPointerClickRef.current) handleRowSelect(event, document, index); }} onDoubleClick={() => { if (!suppressPointerClickRef.current) void api.openDocument(document.id); }}
               onContextMenu={(event) => { event.preventDefault(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); setContextMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}
             >
               <input type="checkbox" checked={selectedIds.has(document.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleDocumentSelection(document.id, index)} aria-label={`选择 ${document.name}`} />
-              <span className="file-name"><FileIcon extension={document.extension} /><span><span className="file-title-line"><strong>{document.name}</strong>{document.tags.map((tag) => <button className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}<button className="add-tag-chip" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={11} />标签</button></span><small>{document.extension.toUpperCase()} 文件{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}</small></span></span>
+              <span className="file-name"><span className="file-icon-wrap"><FileIcon extension={document.extension} />{document.starred && <Star className="star-corner" size={10} fill="currentColor" />}</span><span><span className="file-title-line"><strong>{document.name}</strong>{document.tags.map((tag) => <button className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}<button className="add-tag-chip" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={11} />标签</button></span><small>{document.extension.toUpperCase()} 文件{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}</small></span></span>
               <span>{formatDate(document.modifiedAt)}</span>
               <span>{formatSize(document.size)}</span>
+              <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
           {!documents.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
@@ -687,7 +697,7 @@ export default function App() {
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
-    {contextMenu && <FileContextMenu menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { setClipboard({ mode: "copy", ids: [...selectedIds] }); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
+    {contextMenu && <FileContextMenu menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { setClipboard({ mode: "copy", ids: [...selectedIds] }); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onStar={() => { const target = documents.find((item) => item.id === contextMenu.documentId); setContextMenu(null); if (target) void toggleDocumentStar(target); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
     {tagMenu && <TagBubbleMenu menu={tagMenu} documents={documents} tags={data.tags} onToggle={(tag) => void toggleTagForDocuments(tag, tagMenu.documentIds)} onEdit={(tag) => { setTagMenu(null); editTag(tag); }} onCreate={() => { const ids = tagMenu.documentIds; setTagMenu(null); addTag(ids); }} onOpenTag={(tag) => { setTagMenu(null); selectTag(tag); }} />}
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {dialog && <AppDialogModal state={dialog} nodes={data.nodes} onCancel={() => setDialog(null)} />}
@@ -720,9 +730,9 @@ function CommandMenu({ children }: { children: ReactNode }) {
   return <details className="command-menu"><summary title="更多操作"><MoreHorizontal size={18} /></summary><div>{children}</div></details>;
 }
 
-function FileContextMenu({ menu, document, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onDelete: () => void }) {
+function FileContextMenu({ menu, document, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onStar, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onStar: () => void; onDelete: () => void }) {
   return <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
-    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />移入应用回收站</button>
+    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><button onClick={onStar}><Star size={14} fill={document?.starred ? "currentColor" : "none"} />{document?.starred ? "取消星标" : "设为星标并置顶"}</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />移入应用回收站</button>
   </div>;
 }
 
@@ -1038,6 +1048,7 @@ function readSortPreference(): { key: SortKey; ascending: boolean } {
   return { key: "modified", ascending: false };
 }
 function compareDocuments(a: DocumentItem, b: DocumentItem, key: SortKey, ascending: boolean) {
+  if (a.starred !== b.starred) return a.starred ? -1 : 1;
   if (key === "expiry" && (a.expiresAt === null || b.expiresAt === null)) {
     if (a.expiresAt === b.expiresAt) return a.name.localeCompare(b.name, "zh-CN");
     return a.expiresAt === null ? 1 : -1;
@@ -1056,6 +1067,7 @@ function readNotifications(): LedgerNotification[] {
   } catch { return []; }
 }
 function writeNotifications(items: LedgerNotification[]) { localStorage.setItem("document-ledger.notifications", JSON.stringify(items.slice(0, 200))); }
+function formatElapsed(milliseconds: number) { return `${Math.max(.1, milliseconds / 1000).toFixed(1)} 秒`; }
 function formatSize(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
 type ExpiryState = { days: number; kind: "expired" | "today" | "due-soon" | "active" | "safe"; label: string };
 function expiryState(expiresAt: number | null): ExpiryState | null {

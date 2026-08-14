@@ -22,13 +22,15 @@ export type UpdateFailure = {
 };
 
 let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
+let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
 
 export async function currentVersion(): Promise<string> {
   return getVersion();
 }
 
 export async function findUpdate(): Promise<AvailableUpdate | null> {
-  pendingUpdate = await withTimeout(check(), 25_000);
+  if (!activeCheck) activeCheck = withTimeout(check(), 12_000).finally(() => { activeCheck = null; });
+  pendingUpdate = await activeCheck;
   if (!pendingUpdate) return null;
   return {
     version: pendingUpdate.version,
@@ -41,7 +43,7 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
   const detail = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
   const normalized = detail.toLowerCase();
   if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("超时")) {
-    return { kind: "timeout", title: "GitHub 响应超时", message: "网络已经发起请求，但 25 秒内没有收到完整响应。可以稍后重试。", detail };
+    return { kind: "timeout", title: "GitHub 响应超时", message: "网络已经发起请求，但 12 秒内没有收到完整响应。可以稍后重试。", detail };
   }
   if (normalized.includes("rate limit") || normalized.includes("429") || normalized.includes("403")) {
     return { kind: "rate-limit", title: "GitHub 暂时限制了请求", message: "已连接到 GitHub，但当前请求受到频率限制。等待几分钟后重试。", detail };

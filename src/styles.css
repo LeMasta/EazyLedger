@@ -689,3 +689,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .workspace.with-preview { grid-template-columns: 220px minmax(380px, 1fr) 300px; }
   .home-heading { align-items: flex-start; flex-direction: column; gap: 16px; }
 }
+
+
+/* v0.5.0: persistent starred files */
+.list-header, .file-row { grid-template-columns: 24px minmax(340px, 1fr) 126px 76px 32px; }
+.star-column { display: grid; place-items: center; color: #9a7a2e; }
+.file-icon-wrap { position: relative; width: 32px; height: 32px; flex: none; display: grid; place-items: center; }
+.file-icon-wrap > .file-icon { width: 32px; height: 32px; padding: 6px; border-radius: 7px; background: #eef1f5; }
+.file-icon-wrap > .file-icon.word { background: #e5f0ff; }
+.file-icon-wrap > .file-icon.pdf { background: #fcebec; }
+.file-icon-wrap > .file-icon.image { background: #f3eafa; }
+.star-corner { position: absolute; right: -3px; top: -3px; padding: 1px; border-radius: 50%; color: #d18b00; background: #fff7d6; filter: drop-shadow(0 1px 1px rgba(78, 52, 0, .18)); }
+.row-star { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #8793a2; opacity: 0; }
+.file-row:hover .row-star, .file-row.selected .row-star, .row-star.active { opacity: 1; }
+.row-star:hover { background: #e8edf3; color: #6f7b8a; }
+.row-star.active { color: #c98700; background: #fff7da; }
+.file-row.starred:not(.selected) { border-color: #eee2bb; }
+@media (max-width: 1180px) {
+  .list-header, .file-row { grid-template-columns: 24px minmax(250px, 1fr) 105px 76px 32px; }
+}
