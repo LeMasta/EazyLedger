@@ -23,6 +23,7 @@ export type DocumentItem = {
   relativePath: string;
   notes: string;
   expiresAt: number | null;
+  starred: boolean;
   tags: Tag[];
 };
 
