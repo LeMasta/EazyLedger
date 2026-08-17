@@ -24,11 +24,29 @@ export type UpdateFailure = {
 let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
 let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
 const EXPECTED_VERSION_KEY = "eazyledger.update.expected-version";
+const UPDATE_PROXY_KEY = "eazyledger.update.proxy";
 const CHECK_TIMEOUT_MS = 25_000;
 const CHECK_RETRY_DELAY_MS = 1_200;
 
 export async function currentVersion(): Promise<string> {
   return getVersion();
+}
+
+export function readUpdateProxy(): string {
+  return localStorage.getItem(UPDATE_PROXY_KEY)?.trim() ?? "";
+}
+
+export function saveUpdateProxy(value: string): void {
+  const proxy = value.trim();
+  if (proxy) localStorage.setItem(UPDATE_PROXY_KEY, proxy);
+  else localStorage.removeItem(UPDATE_PROXY_KEY);
+}
+
+function updateCheckOptions(): { timeout: number; proxy?: string } {
+  const configured = readUpdateProxy();
+  if (!configured) return { timeout: CHECK_TIMEOUT_MS };
+  const proxy = /^[a-z][a-z0-9+.-]*:\/\//i.test(configured) ? configured : `http://${configured}`;
+  return { timeout: CHECK_TIMEOUT_MS, proxy };
 }
 
 export function previousInstallIssue(current: string): string | null {
@@ -64,12 +82,12 @@ export async function findUpdate(): Promise<AvailableUpdate | null> {
 
 async function checkWithRetry(): Promise<Awaited<ReturnType<typeof check>>> {
   try {
-    return await withTimeout(check(), CHECK_TIMEOUT_MS);
+    return await check(updateCheckOptions());
   } catch (firstReason) {
     if (!shouldRetryCheck(firstReason)) throw firstReason;
     await delay(CHECK_RETRY_DELAY_MS);
     try {
-      return await withTimeout(check(), CHECK_TIMEOUT_MS);
+      return await check(updateCheckOptions());
     } catch (retryReason) {
       throw new Error(`Update check failed after retry. First attempt: ${failureDetail(firstReason)}; retry: ${failureDetail(retryReason)}`);
     }
@@ -99,26 +117,16 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
   if (normalized.includes("rate limit") || normalized.includes("429") || normalized.includes("403")) {
     return { kind: "rate-limit", title: "GitHub 暂时限制了请求", message: "已连接到 GitHub，但当前请求受到频率限制。等待几分钟后重试。", detail };
   }
+  if (["error sending request", "network", "connect", "connection", "dns", "tcp", "tls", "offline", "socket"].some((term) => normalized.includes(term))) {
+    return { kind: "network", title: "无法连接 GitHub", message: "自动重试后仍未连接到 GitHub。请检查更新代理、网络或防火墙；也可从 GitHub Release 手动下载安装包。", detail };
+  }
   if (normalized.includes("404") || normalized.includes("not found") || normalized.includes("latest.json") || normalized.includes("json") || normalized.includes("deserialize") || normalized.includes("parse")) {
     return { kind: "metadata", title: "更新清单不可用", message: "已访问更新地址，但 Release 中缺少或无法解析 latest.json。当前安装不会受影响。", detail };
   }
   if (normalized.includes("signature") || normalized.includes("public key") || normalized.includes("minisign")) {
     return { kind: "signature", title: "更新签名校验失败", message: "安装包或签名与应用内公钥不匹配。为安全起见，更新已停止。", detail };
   }
-  if (["network", "connect", "connection", "dns", "tcp", "tls", "offline", "request", "socket"].some((term) => normalized.includes(term))) {
-    return { kind: "network", title: "无法连接 GitHub", message: "自动重试后仍未连接到 GitHub。请检查网络、代理或防火墙；也可从 GitHub Release 手动下载安装包。", detail };
-  }
   return { kind: "unknown", title: "检查更新失败", message: "更新服务返回了未识别的错误。可展开技术信息用于排查。", detail };
-}
-
-function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error(`Update request timed out after ${timeoutMs}ms`)), timeoutMs);
-    task.then(
-      (result) => { window.clearTimeout(timer); resolve(result); },
-      (reason) => { window.clearTimeout(timer); reject(reason); },
-    );
-  });
 }
 
 export async function installPendingUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void> {
