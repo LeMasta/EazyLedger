@@ -41,12 +41,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: "资料台账 v__VERSION__"
+          releaseName: "EazyLedger v__VERSION__"
           releaseBody: |
-            Windows 11 资料台账更新。
+            EazyLedger Windows 更新。
 
             首次安装请下载 EXE 安装程序；v0.4.0 及更高版本可在应用的“设置 → 软件更新”中完成后续更新。
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           retryAttempts: 2
 

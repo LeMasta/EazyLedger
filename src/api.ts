@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { demoData, demoPreview } from "./demo";
-import type { BootstrapData, DocumentItem, Preview, Tag } from "./types";
+import type { AppSettings, BootstrapData, DeleteMode, DocumentItem, Preview, Tag, TrashItem } from "./types";
 
 const desktop = isTauri();
 let demo = structuredClone(demoData);
@@ -38,6 +38,9 @@ export const api = {
   },
   async importPaths(paths: string[], nodeId: string, mode: "copy" | "move" = "copy"): Promise<DocumentItem[]> {
     return desktop ? invoke("import_paths", { paths, nodeId, mode }) : [];
+  },
+  async importClipboardFiles(nodeId: string): Promise<number> {
+    return desktop ? invoke("import_clipboard_files", { nodeId }) : 0;
   },
   async openDocument(id: string): Promise<void> {
     if (desktop) await invoke("open_document", { id });
@@ -132,6 +135,29 @@ export const api = {
   async deleteDocuments(ids: string[]): Promise<void> {
     if (desktop) await invoke("delete_documents", { ids });
     else demo.documents = demo.documents.filter((document) => !ids.includes(document.id));
+  },
+  async listTrash(): Promise<TrashItem[]> {
+    return desktop ? invoke("list_trash") : [];
+  },
+  async restoreTrashItem(trashId: string): Promise<void> {
+    if (desktop) await invoke("restore_trash_item", { trashId });
+  },
+  async emptyTrash(): Promise<void> {
+    if (desktop) await invoke("empty_trash");
+  },
+  async revealTrash(): Promise<void> {
+    if (desktop) await invoke("reveal_trash");
+  },
+  async updatePreferences(deleteMode: DeleteMode, tagDisplayLimit: number): Promise<AppSettings> {
+    if (desktop) return invoke("update_preferences", { deleteMode, tagDisplayLimit });
+    demo.settings = { ...demo.settings, deleteMode, tagDisplayLimit };
+    return structuredClone(demo.settings);
+  },
+  async changeTrashLocation(): Promise<string | null> {
+    if (!desktop) return null;
+    const destination = await open({ title: "选择新的应用回收站位置", directory: true, multiple: false });
+    if (!destination || Array.isArray(destination)) return null;
+    return invoke("change_trash_location", { destination });
   },
   async exportManifest(): Promise<boolean> {
     if (!desktop) return false;

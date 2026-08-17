@@ -46,10 +46,62 @@ struct AppState {
 
 struct WatcherState(Mutex<Option<RecommendedWatcher>>);
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
 struct AppConfig {
     vault_path: String,
+    delete_mode: String,
+    trash_path: String,
+    tag_display_limit: usize,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            vault_path: String::new(),
+            delete_mode: "app".into(),
+            trash_path: String::new(),
+            tag_display_limit: 3,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    delete_mode: String,
+    trash_path: String,
+    tag_display_limit: usize,
+    trash_count: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashItem {
+    trash_id: String,
+    id: String,
+    name: String,
+    extension: String,
+    size: i64,
+    deleted_at: i64,
+    original_node_name: Option<String>,
+}
+
+#[derive(Clone)]
+struct TrashRecord {
+    trash_id: String,
+    id: String,
+    original_node_id: String,
+    name: String,
+    extension: String,
+    size: i64,
+    modified_at: i64,
+    notes: String,
+    expires_at: Option<i64>,
+    starred: bool,
+    tag_ids: Vec<String>,
+    deleted_at: i64,
+    storage_name: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -94,6 +146,7 @@ struct BootstrapData {
     nodes: Vec<NodeItem>,
     tags: Vec<TagItem>,
     documents: Vec<DocumentItem>,
+    settings: AppSettings,
 }
 
 #[derive(Serialize)]
@@ -120,8 +173,13 @@ pub fn run() {
             fs::create_dir_all(&app_data_path)?;
             let config_path = app_data_path.join("settings.json");
             let default_vault_path = app_data_path.join("vault");
-            let vault_path = read_configured_vault(&config_path).unwrap_or(default_vault_path);
+            let config = read_app_config(&config_path, &default_vault_path);
+            let vault_path = PathBuf::from(&config.vault_path);
             initialize_vault(&vault_path).map_err(std::io::Error::other)?;
+            let trash_path = resolved_trash_path(&config, &vault_path);
+            fs::create_dir_all(&trash_path)?;
+            migrate_legacy_trash_directory(&vault_path, &trash_path).map_err(std::io::Error::other)?;
+            index_legacy_trash(&vault_path, &trash_path).map_err(std::io::Error::other)?;
             app.asset_protocol_scope()
                 .allow_directory(&vault_path, true)
                 .map_err(std::io::Error::other)?;
@@ -135,6 +193,7 @@ pub fn run() {
             bootstrap,
             search_documents,
             import_paths,
+            import_clipboard_files,
             open_document,
             reveal_document,
             reveal_vault,
@@ -158,6 +217,12 @@ pub fn run() {
             move_documents,
             copy_documents,
             delete_documents,
+            list_trash,
+            restore_trash_item,
+            empty_trash,
+            reveal_trash,
+            update_preferences,
+            change_trash_location,
             export_manifest,
             create_backup,
             change_vault_location
@@ -166,11 +231,47 @@ pub fn run() {
         .expect("EazyLedger 启动失败");
 }
 
-fn read_configured_vault(config_path: &Path) -> Option<PathBuf> {
-    let content = fs::read_to_string(config_path).ok()?;
-    let config: AppConfig = serde_json::from_str(&content).ok()?;
-    let path = PathBuf::from(config.vault_path);
-    if path.as_os_str().is_empty() { None } else { Some(path) }
+fn read_app_config(config_path: &Path, fallback_vault: &Path) -> AppConfig {
+    let mut config = fs::read_to_string(config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<AppConfig>(&content).ok())
+        .unwrap_or_default();
+    if config.vault_path.trim().is_empty() {
+        config.vault_path = fallback_vault.to_string_lossy().to_string();
+    }
+    if !matches!(config.delete_mode.as_str(), "app" | "system" | "permanent") {
+        config.delete_mode = "app".into();
+    }
+    config.tag_display_limit = config.tag_display_limit.clamp(1, 10);
+    config
+}
+
+fn write_app_config(config_path: &Path, config: &AppConfig) -> Result<(), String> {
+    let serialized = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
+    fs::write(config_path, serialized).map_err(|error| error.to_string())
+}
+
+fn default_trash_path(vault_path: &Path) -> PathBuf {
+    vault_path.join("database").join("trash")
+}
+
+fn resolved_trash_path(config: &AppConfig, vault_path: &Path) -> PathBuf {
+    if config.trash_path.trim().is_empty() { default_trash_path(vault_path) } else { PathBuf::from(&config.trash_path) }
+}
+
+fn load_app_settings(state: &AppState) -> Result<AppSettings, String> {
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let trash_path = resolved_trash_path(&config, &state.vault_path);
+    fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
+    let trash_count = open_db(&state.vault_path)?
+        .query_row("SELECT COUNT(*) FROM trash_items", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    Ok(AppSettings {
+        delete_mode: config.delete_mode,
+        trash_path: trash_path.to_string_lossy().to_string(),
+        tag_display_limit: config.tag_display_limit,
+        trash_count,
+    })
 }
 
 fn db_path(vault_path: &Path) -> PathBuf {
@@ -188,7 +289,9 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
     fs::create_dir_all(vault_path.join("database")).map_err(|error| error.to_string())?;
     fs::create_dir_all(vault_path.join("files")).map_err(|error| error.to_string())?;
     fs::create_dir_all(vault_path.join("backups")).map_err(|error| error.to_string())?;
-    fs::create_dir_all(vault_path.join("trash")).map_err(|error| error.to_string())?;
+    let trash_path = default_trash_path(vault_path);
+    fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
+    migrate_legacy_trash_directory(vault_path, &trash_path)?;
     let connection = open_db(vault_path)?;
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS nodes (
@@ -219,6 +322,21 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
             PRIMARY KEY(document_id, tag_id)
+        );
+        CREATE TABLE IF NOT EXISTS trash_items (
+            trash_id TEXT PRIMARY KEY,
+            id TEXT NOT NULL,
+            original_node_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            extension TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            modified_at INTEGER NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            expires_at INTEGER,
+            starred INTEGER NOT NULL DEFAULT 0,
+            tag_ids_json TEXT NOT NULL DEFAULT '[]',
+            deleted_at INTEGER NOT NULL,
+            storage_name TEXT NOT NULL UNIQUE
         );
         CREATE INDEX IF NOT EXISTS idx_documents_node ON documents(node_id);
         CREATE INDEX IF NOT EXISTS idx_documents_name ON documents(display_name);
@@ -261,11 +379,13 @@ fn bootstrap(state: State<AppState>) -> Result<BootstrapData, String> {
     let nodes = load_nodes(&connection)?;
     let tags = load_tags(&connection)?;
     let documents = load_documents(&connection)?;
+    let settings = load_app_settings(&state)?;
     Ok(BootstrapData {
         vault_path: state.vault_path.to_string_lossy().to_string(),
         nodes,
         tags,
         documents,
+        settings,
     })
 }
 
@@ -344,6 +464,47 @@ fn import_paths(
     drop(connection);
     let connection = open_db(&state.vault_path)?;
     load_documents(&connection)
+}
+
+#[tauri::command]
+fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usize, String> {
+    #[cfg(target_os = "windows")]
+    let paths: Vec<String> = {
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "$items = @(Get-Clipboard -Format FileDropList -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }); ConvertTo-Json -Compress -InputObject $items"])
+            .output()
+            .map_err(|error| format!("无法读取系统剪贴板：{error}"))?;
+        if !output.status.success() {
+            return Err("无法读取系统剪贴板中的文件，请确认文件仍存在".into());
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Array(Vec::new()));
+        match value {
+            serde_json::Value::Array(items) => items.into_iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+            serde_json::Value::String(item) => vec![item],
+            _ => Vec::new(),
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let paths: Vec<String> = Vec::new();
+
+    if paths.is_empty() { return Ok(0); }
+    let connection = open_db(&state.vault_path)?;
+    let node_exists: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)", [&node_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if !node_exists { return Err("目标台账节点不存在".into()); }
+    let before: i64 = connection.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    for raw in paths {
+        let path = PathBuf::from(raw);
+        if is_ignored_system_entry(&path) { continue; }
+        if path.is_dir() {
+            import_directory_tree(&connection, &state.vault_path, &path, &node_id, "copy")?;
+        } else if path.is_file() && !path.starts_with(state.vault_path.join("files")) {
+            import_one(&connection, &state.vault_path, &path, &node_id, "copy")?;
+        }
+    }
+    let after: i64 = connection.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    Ok((after - before).max(0) as usize)
 }
 
 fn import_directory_tree(
@@ -601,7 +762,7 @@ fn delete_node(id: String, state: State<AppState>) -> Result<(), String> {
     let descendants = descendant_ids(&id, &nodes);
     let documents = load_documents(&connection)?;
     let document_ids: Vec<String> = documents.into_iter().filter(|document| descendants.contains(&document.node_id)).map(|document| document.id).collect();
-    trash_documents_internal(&connection, &state.vault_path, &document_ids)?;
+    delete_documents_internal(&connection, &state, &document_ids)?;
     let mut node_ids: Vec<String> = descendants.into_iter().collect();
     node_ids.sort_by_key(|node_id| std::cmp::Reverse(node_depth(node_id, &nodes)));
     for node_id in node_ids {
@@ -785,19 +946,247 @@ fn copy_name(name: &str) -> String {
 #[tauri::command]
 fn delete_documents(ids: Vec<String>, state: State<AppState>) -> Result<(), String> {
     let connection = open_db(&state.vault_path)?;
-    trash_documents_internal(&connection, &state.vault_path, &ids)
+    delete_documents_internal(&connection, &state, &ids)
 }
 
-fn trash_documents_internal(connection: &Connection, vault: &Path, ids: &[String]) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn move_to_system_trash(path: &Path) -> Result<(), String> {
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:EAZYLEDGER_RECYCLE_TARGET, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)"])
+        .env("EAZYLEDGER_RECYCLE_TARGET", path)
+        .status()
+        .map_err(|error| format!("无法调用系统回收站：{error}"))?;
+    if status.success() { Ok(()) } else { Err("系统回收站拒绝了删除操作".into()) }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_to_system_trash(_path: &Path) -> Result<(), String> {
+    Err("当前平台暂不支持系统回收站删除方式".into())
+}
+
+fn delete_documents_internal(connection: &Connection, state: &AppState, ids: &[String]) -> Result<(), String> {
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let trash_path = resolved_trash_path(&config, &state.vault_path);
+    fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
     for id in ids {
-        let directory = vault.join("files").join(id);
-        if directory.exists() {
-            let destination = vault.join("trash").join(format!("{}-{}", id, now_ms()));
-            fs::rename(&directory, &destination).map_err(|error| error.to_string())?;
+        let directory = state.vault_path.join("files").join(id);
+        match config.delete_mode.as_str() {
+            "system" => {
+                if directory.exists() {
+                    if let Some(file_path) = first_file_in(&directory) {
+                        move_to_system_trash(&file_path)?;
+                    }
+                    if directory.exists() { fs::remove_dir_all(&directory).map_err(|error| error.to_string())?; }
+                }
+            }
+            "permanent" => {
+                if directory.exists() { fs::remove_dir_all(&directory).map_err(|error| error.to_string())?; }
+            }
+            _ => move_document_to_app_trash(connection, &state.vault_path, &trash_path, id, &directory)?,
         }
         connection.execute("DELETE FROM documents WHERE id=?1", [id]).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn move_document_to_app_trash(connection: &Connection, vault: &Path, trash_path: &Path, id: &str, directory: &Path) -> Result<(), String> {
+    let document = load_documents(connection)?.into_iter().find(|item| item.id == id).ok_or("资料记录不存在")?;
+    let tag_ids = document.tags.iter().map(|tag| tag.id.clone()).collect::<Vec<_>>();
+    let deleted_at = now_ms();
+    let storage_name = format!("{}-{}", id, deleted_at);
+    let destination = trash_path.join(&storage_name);
+    if directory.exists() { move_directory(directory, &destination)?; }
+    let trash_id = Uuid::new_v4().to_string();
+    let insert = connection.execute(
+        "INSERT INTO trash_items(trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![trash_id, document.id, document.node_id, document.name, document.extension, document.size, document.modified_at, document.notes, document.expires_at, document.starred as i64, serde_json::to_string(&tag_ids).map_err(|error| error.to_string())?, deleted_at, storage_name],
+    );
+    if let Err(error) = insert {
+        if destination.exists() { let _ = move_directory(&destination, directory); }
+        return Err(error.to_string());
+    }
+    let _ = vault;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_trash(state: State<AppState>) -> Result<Vec<TrashItem>, String> {
+    let connection = open_db(&state.vault_path)?;
+    let mut statement = connection.prepare(
+        "SELECT ti.trash_id, ti.id, ti.display_name, ti.extension, ti.size, ti.deleted_at, n.name
+         FROM trash_items ti LEFT JOIN nodes n ON n.id=ti.original_node_id ORDER BY ti.deleted_at DESC"
+    ).map_err(|error| error.to_string())?;
+    let rows = statement.query_map([], |row| Ok(TrashItem {
+        trash_id: row.get(0)?,
+        id: row.get(1)?,
+        name: row.get(2)?,
+        extension: row.get(3)?,
+        size: row.get(4)?,
+        deleted_at: row.get(5)?,
+        original_node_name: row.get(6)?,
+    })).map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+}
+
+fn load_trash_record(connection: &Connection, trash_id: &str) -> Result<TrashRecord, String> {
+    connection.query_row(
+        "SELECT trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name
+         FROM trash_items WHERE trash_id=?1",
+        [trash_id],
+        |row| {
+            let tag_ids_json: String = row.get(10)?;
+            Ok(TrashRecord {
+                trash_id: row.get(0)?,
+                id: row.get(1)?,
+                original_node_id: row.get(2)?,
+                name: row.get(3)?,
+                extension: row.get(4)?,
+                size: row.get(5)?,
+                modified_at: row.get(6)?,
+                notes: row.get(7)?,
+                expires_at: row.get(8)?,
+                starred: row.get::<_, i64>(9)? != 0,
+                tag_ids: serde_json::from_str(&tag_ids_json).unwrap_or_default(),
+                deleted_at: row.get(11)?,
+                storage_name: row.get(12)?,
+            })
+        },
+    ).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn restore_trash_item(trash_id: String, state: State<AppState>) -> Result<(), String> {
+    let connection = open_db(&state.vault_path)?;
+    let record = load_trash_record(&connection, &trash_id)?;
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let trash_path = resolved_trash_path(&config, &state.vault_path);
+    let source = trash_path.join(&record.storage_name);
+    if !source.exists() { return Err("回收站中的文件目录已丢失".into()); }
+    let destination = state.vault_path.join("files").join(&record.id);
+    if destination.exists() { return Err("资料库中已存在同 ID 文件，无法自动恢复".into()); }
+    move_directory(&source, &destination)?;
+    let file_path = first_file_in(&destination).ok_or("回收站项目中没有可恢复的文件")?;
+    let relative_path = file_path.strip_prefix(&state.vault_path).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
+    let node_exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)", [&record.original_node_id], |row| row.get(0)).unwrap_or(false);
+    let node_id = if node_exists { record.original_node_id.clone() } else { ROOT_NODE_ID.into() };
+    let content_text = extract_text(&file_path, &record.extension);
+    let result = connection.execute(
+        "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at, expires_at, starred)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![record.id, node_id, record.name, record.extension, relative_path, record.size, record.modified_at, content_text, record.notes, now_ms(), record.expires_at, record.starred as i64],
+    );
+    if let Err(error) = result {
+        let _ = move_directory(&destination, &source);
+        return Err(error.to_string());
+    }
+    for tag_id in record.tag_ids {
+        connection.execute(
+            "INSERT OR IGNORE INTO document_tags(document_id, tag_id) SELECT ?1, id FROM tags WHERE id=?2",
+            params![record.id, tag_id],
+        ).map_err(|error| error.to_string())?;
+    }
+    connection.execute("DELETE FROM trash_items WHERE trash_id=?1", [&record.trash_id]).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn empty_trash(state: State<AppState>) -> Result<(), String> {
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let trash_path = resolved_trash_path(&config, &state.vault_path);
+    if trash_path.exists() {
+        for entry in fs::read_dir(&trash_path).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() { fs::remove_dir_all(path).map_err(|error| error.to_string())?; }
+            else { fs::remove_file(path).map_err(|error| error.to_string())?; }
+        }
+    }
+    open_db(&state.vault_path)?.execute("DELETE FROM trash_items", []).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_trash(state: State<AppState>) -> Result<(), String> {
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let trash_path = resolved_trash_path(&config, &state.vault_path);
+    fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
+    open::that(trash_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_preferences(delete_mode: String, tag_display_limit: usize, state: State<AppState>) -> Result<AppSettings, String> {
+    if !matches!(delete_mode.as_str(), "app" | "system" | "permanent") { return Err("不支持的删除方式".into()); }
+    if !(1..=10).contains(&tag_display_limit) { return Err("标签显示上限必须在 1 到 10 之间".into()); }
+    let mut config = read_app_config(&state.config_path, &state.vault_path);
+    config.delete_mode = delete_mode;
+    config.tag_display_limit = tag_display_limit;
+    write_app_config(&state.config_path, &config)?;
+    load_app_settings(&state)
+}
+
+#[tauri::command]
+fn change_trash_location(destination: String, state: State<AppState>) -> Result<String, String> {
+    let destination = PathBuf::from(destination);
+    let mut config = read_app_config(&state.config_path, &state.vault_path);
+    let current = resolved_trash_path(&config, &state.vault_path);
+    if destination == current { return Err("所选目录已经是当前应用回收站位置".into()); }
+    if destination.starts_with(state.vault_path.join("files")) || current.starts_with(&destination) || destination.starts_with(&current) {
+        return Err("应用回收站不能位于资料文件目录内，也不能与原回收站互相包含".into());
+    }
+    fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
+    if fs::read_dir(&destination).map_err(|error| error.to_string())?.next().is_some() {
+        return Err("为避免混入其他文件，新的应用回收站位置必须是空目录".into());
+    }
+    if current.exists() {
+        for entry in fs::read_dir(&current).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            let name = path.file_name().ok_or("回收站项目名称异常")?;
+            move_directory(&path, &destination.join(name))?;
+        }
+    }
+    config.trash_path = destination.to_string_lossy().to_string();
+    write_app_config(&state.config_path, &config)?;
+    Ok(format!("应用回收站已迁移到 {}", destination.to_string_lossy()))
+}
+
+fn migrate_legacy_trash_directory(vault: &Path, destination: &Path) -> Result<(), String> {
+    let legacy = vault.join("trash");
+    if !legacy.exists() || legacy == destination { return Ok(()); }
+    for entry in fs::read_dir(&legacy).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let name = path.file_name().ok_or("旧回收站项目名称异常")?;
+        let target = destination.join(name);
+        if !target.exists() { move_directory(&path, &target)?; }
+    }
+    let _ = fs::remove_dir(&legacy);
+    Ok(())
+}
+
+fn index_legacy_trash(vault: &Path, trash_path: &Path) -> Result<(), String> {
+    let connection = open_db(vault)?;
+    if !trash_path.exists() { return Ok(()); }
+    for entry in fs::read_dir(trash_path).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if !path.is_dir() { continue; }
+        let storage_name = match path.file_name().and_then(|value| value.to_str()) { Some(value) => value.to_string(), None => continue };
+        let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM trash_items WHERE storage_name=?1)", [&storage_name], |row| row.get(0)).unwrap_or(false);
+        if indexed { continue; }
+        let Some(file_path) = first_file_in(&path) else { continue; };
+        let name = file_path.file_name().and_then(|value| value.to_str()).unwrap_or("已删除文件").to_string();
+        let extension = file_path.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
+        let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+        let deleted_at = storage_name.rsplit_once('-').and_then(|(_, value)| value.parse::<i64>().ok()).unwrap_or_else(now_ms);
+        connection.execute(
+            "INSERT INTO trash_items(trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, '', NULL, 0, '[]', ?8, ?9)",
+            params![Uuid::new_v4().to_string(), Uuid::new_v4().to_string(), ROOT_NODE_ID, name, extension, metadata.len() as i64, modified_ms(&metadata), deleted_at, storage_name],
+        ).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn first_file_in(directory: &Path) -> Option<PathBuf> {
+    WalkDir::new(directory).min_depth(1).into_iter().filter_map(Result::ok).find(|entry| entry.file_type().is_file()).map(|entry| entry.path().to_path_buf())
 }
 
 #[tauri::command]
@@ -840,9 +1229,9 @@ fn change_vault_location(destination: String, migrate: bool, state: State<AppSta
         }
         initialize_vault(&destination)?;
     }
-    let config = AppConfig { vault_path: destination.to_string_lossy().to_string() };
-    let serialized = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(&state.config_path, serialized).map_err(|error| error.to_string())?;
+    let mut config = read_app_config(&state.config_path, &state.vault_path);
+    config.vault_path = destination.to_string_lossy().to_string();
+    write_app_config(&state.config_path, &config)?;
     Ok(format!("新的资料库位置已设置为 {}。请关闭并重新打开应用以完成切换。旧资料库仍保留在原位置。", destination.to_string_lossy()))
 }
 
@@ -970,6 +1359,19 @@ fn refresh_changed_file(vault: &Path, path: &Path) -> Result<(), String> {
         params![metadata.len() as i64, modified_ms(&metadata), extract_text(path, &extension), id],
     ).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn move_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+    match fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_directory(source, destination)?;
+            if source.is_dir() { fs::remove_dir_all(source).map_err(|error| error.to_string())?; }
+            else { fs::remove_file(source).map_err(|error| error.to_string())?; }
+            Ok(())
+        }
+    }
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
