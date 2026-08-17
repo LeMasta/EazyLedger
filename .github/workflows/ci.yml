@@ -35,4 +35,4 @@ jobs:
 
       - name: 验证 Tauri 后端
         working-directory: src-tauri
-        run: cargo check --locked
+        run: cargo check
