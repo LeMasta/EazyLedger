@@ -20,6 +20,12 @@ export const demoData: BootstrapData = {
     { id: "t4", name: "2026年", color: "#10b981", documentCount: 4 },
   ],
   documents: [],
+  settings: {
+    deleteMode: "app",
+    trashPath: "D:\\EazyLedger\\database\\trash",
+    tagDisplayLimit: 3,
+    trashCount: 0,
+  },
 };
 
 const tags = demoData.tags;

@@ -9,8 +9,8 @@ import {
   PanelRightOpen, Pencil, Plus, RefreshCw, RotateCcw, RotateCw, Scissors, Search, Tags, Trash2, X, House, Files, Settings, Database, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { api } from "./api";
-import type { AppTab, BootstrapData, DocumentItem, NodeItem, Preview, Tag } from "./types";
-import { currentVersion, describeUpdateFailure, findUpdate, installPendingUpdate, type AvailableUpdate, type UpdateFailure } from "./updater";
+import type { AppTab, BootstrapData, DeleteMode, DocumentItem, NodeItem, Preview, Tag, TrashItem } from "./types";
+import { currentVersion, describeUpdateFailure, findUpdate, installPendingUpdate, previousInstallIssue, type AvailableUpdate, type UpdateFailure } from "./updater";
 
 const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "" };
 const tagColors = [
@@ -78,8 +78,10 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.5.0");
+  const [appVersion, setAppVersion] = useState("0.5.1");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
   const [notifications, setNotifications] = useState<LedgerNotification[]>(readNotifications);
   const [updateUi, setUpdateUi] = useState<UpdateUiState>({ phase: "idle" });
   const lastSelectedIndex = useRef<number | null>(null);
@@ -174,8 +176,15 @@ export default function App() {
 
   useEffect(() => {
     if (!api.isDesktop) return;
-    void currentVersion().then(setAppVersion).catch(() => undefined);
-    void checkForUpdates(false);
+    void (async () => {
+      try {
+        const version = await currentVersion();
+        setAppVersion(version);
+        const issue = previousInstallIssue(version);
+        if (issue) setSettingsNotice(issue);
+      } catch { /* 版本读取失败不影响资料库使用 */ }
+      await checkForUpdates(false);
+    })();
   }, [checkForUpdates]);
 
   useEffect(() => {
@@ -297,14 +306,14 @@ export default function App() {
       if (event.ctrlKey && event.key.toLowerCase() === "a") { event.preventDefault(); setSelectedIds(new Set(documents.map((item) => item.id))); }
       if (event.ctrlKey && event.key.toLowerCase() === "c" && selectedIds.size) { event.preventDefault(); setClipboard({ mode: "copy", ids: [...selectedIds] }); }
       if (event.ctrlKey && event.key.toLowerCase() === "x" && selectedIds.size) { event.preventDefault(); setClipboard({ mode: "cut", ids: [...selectedIds] }); }
-      if (event.ctrlKey && event.key.toLowerCase() === "v" && clipboard) { event.preventDefault(); void pasteClipboard(); }
+      if (event.ctrlKey && event.key.toLowerCase() === "v") { event.preventDefault(); void pasteAvailableClipboard(); }
       if (event.key === "F2" && selectedIds.size === 1) { event.preventDefault(); void renameSelected(); }
       if (event.key === "Delete" && selectedIds.size) { event.preventDefault(); void deleteSelected(); }
       if (event.key === "Escape") { setSelectedIds(new Set()); setContextMenu(null); setDialog(null); }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [clipboard, documents, selectedIds, activeTab.nodeId]);
+  }, [clipboard, documents, selectedIds, activeTab.nodeId, activeTab.view, data]);
 
   function updateActive(patch: Partial<AppTab>) {
     setTabs((current) => current.map((tab) => tab.id === activeTabId ? { ...tab, ...patch } : tab));
@@ -434,11 +443,54 @@ export default function App() {
     await runAction(async () => { await api.copyDocuments(ids, nodeId); await refreshAll(); });
   }
 
-  async function pasteClipboard() {
-    if (!clipboard) return;
+  async function pasteAvailableClipboard() {
+    if (activeTab.view === "settings") return;
     const target = activeTab.nodeId ?? ROOT_FALLBACK(data);
-    if (clipboard.mode === "copy") await copyFiles(clipboard.ids, target);
-    else { await moveFiles(clipboard.ids, target); setClipboard(null); }
+    if (clipboard) {
+      if (clipboard.mode === "copy") await copyFiles(clipboard.ids, target);
+      else { await moveFiles(clipboard.ids, target); setClipboard(null); }
+      return;
+    }
+    await runAction(async () => {
+      const count = await api.importClipboardFiles(target);
+      if (!count) { setError("剪贴板中没有可导入的文件或文件夹"); return; }
+      await refreshAll();
+    });
+  }
+
+  async function openTrashCenter() {
+    await runAction(async () => {
+      setTrashItems(await api.listTrash());
+      setTrashOpen(true);
+    });
+  }
+
+  async function restoreTrashItem(trashId: string) {
+    await runAction(async () => {
+      await api.restoreTrashItem(trashId);
+      setTrashItems(await api.listTrash());
+      await refreshAll();
+    });
+  }
+
+  function requestEmptyTrash() {
+    if (!trashItems.length) return;
+    setDialog({
+      kind: "confirm", tone: "danger", title: "清空应用回收站？", description: `将永久删除回收站中的 ${trashItems.length} 个文件，无法恢复。`, confirmLabel: "永久清空",
+      onConfirm: () => void runAction(async () => {
+        await api.emptyTrash();
+        setTrashItems([]);
+        await refreshBootstrap();
+      }),
+    });
+  }
+
+  async function savePreferences(deleteMode: DeleteMode, tagDisplayLimit: number) {
+    await runAction(async () => {
+      await api.updatePreferences(deleteMode, tagDisplayLimit);
+      await refreshBootstrap();
+      setSettingsNotice("文件管理设置已保存");
+    });
   }
 
   function renameSelected() {
@@ -451,10 +503,11 @@ export default function App() {
   }
 
   function deleteSelected() {
-    if (!selectedIds.size) return;
+    if (!selectedIds.size || !data) return;
     const ids = [...selectedIds];
+    const copy = deletionCopy(data.settings.deleteMode, ids.length, "文件");
     setDialog({
-      kind: "confirm", tone: "danger", title: `移入回收站？`, description: `将把选中的 ${ids.length} 个文件移入应用回收站。原始导入来源不会受到影响。`, confirmLabel: "移入回收站",
+      kind: "confirm", tone: "danger", title: copy.title, description: copy.description, confirmLabel: copy.confirmLabel,
       onConfirm: () => void runAction(async () => { await api.deleteDocuments(ids); setSelectedIds(new Set()); await refreshAll(); }),
     });
   }
@@ -502,9 +555,10 @@ export default function App() {
   }
 
   function deleteNode(node: NodeItem) {
-    if (node.id === "root") return;
+    if (node.id === "root" || !data) return;
+    const copy = deletionCopy(data.settings.deleteMode, 1, "节点及其中资料");
     setDialog({
-      kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: "该节点、全部下级节点及其中资料都会被移入应用回收站。", confirmLabel: "删除节点",
+      kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: copy.description, confirmLabel: copy.confirmLabel,
       onConfirm: () => void runAction(async () => {
         await api.deleteNode(node.id);
         if (activeTab.nodeId === node.id) goHome();
@@ -639,17 +693,18 @@ export default function App() {
       <button onClick={() => void chooseImportFolder()}><FolderInput size={16} />导入文件夹</button>
       <button onClick={() => void addNode()}><FolderPlus size={16} />新建节点</button>
       <button onClick={() => void addTag()}><Tags size={16} />新建标签</button>
-      <button disabled={!clipboard} onClick={() => void pasteClipboard()}><ClipboardPaste size={16} />粘贴</button>
+      <button disabled={activeTab.view === "settings"} onClick={() => void pasteAvailableClipboard()} title="支持应用内复制及资源管理器复制的文件"><ClipboardPaste size={16} />粘贴</button>
       <CommandMenu>
         <button onClick={() => void renameCurrentNode()}>重命名当前节点</button><button onClick={() => void copyCurrentNode()}>复制当前节点及内容</button><button onClick={() => void moveCurrentNode()}>移动当前节点</button><button className="danger" onClick={() => void deleteCurrentNode()}>删除当前节点</button>
         <hr /><button onClick={() => void api.exportManifest()}><Download size={14} />导出台账</button><button onClick={() => void api.createBackup()}><Archive size={14} />完整备份</button>
       </CommandMenu>
       <span className="command-spacer" />
+      <button className="trash-button" title="打开应用回收站" onClick={() => void openTrashCenter()}><Trash2 size={16} />回收站{data.settings.trashCount > 0 && <span>{data.settings.trashCount > 99 ? "99+" : data.settings.trashCount}</span>}</button>
       <button className={`notification-button ${unreadNotificationCount ? "has-alerts" : ""}`} title="打开通知中心" onClick={() => setNotificationCenterOpen(true)}><Bell size={16} />通知{unreadNotificationCount > 0 && <span>{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}</button>
       <button onClick={openSettings}><Settings size={16} />设置</button>
       <button onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}{previewOpen ? "隐藏预览" : "显示预览"}</button>
     </section>
-    {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => Number(b.starred) - Number(a.starred) || b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onRevealVault={() => runAction(() => api.revealVault())} onBackup={() => runAction(async () => { await api.createBackup(); })} onRequestEmptyVault={() => setDialog({ kind: "confirm", title: "使用空资料库？", description: "新位置将创建空资料库，现有资料仍完整保留在旧位置。切换将在重启后生效。", confirmLabel: "继续选择位置", onConfirm: () => void runAction(async () => { const result = await api.changeVaultLocation(false); if (result) setSettingsNotice(result); }) })} onChangeVault={() => runAction(async () => { const result = await api.changeVaultLocation(true); if (result) setSettingsNotice(result); })} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
+    {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => Number(b.starred) - Number(a.starred) || b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} settings={data.settings} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onRevealVault={() => runAction(() => api.revealVault())} onBackup={() => runAction(async () => { await api.createBackup(); })} onSavePreferences={savePreferences} onRevealTrash={() => runAction(() => api.revealTrash())} onChangeTrash={() => runAction(async () => { const result = await api.changeTrashLocation(); if (result) { setSettingsNotice(result); await refreshBootstrap(); } })} onOpenTrash={() => void openTrashCenter()} onRequestEmptyVault={() => setDialog({ kind: "confirm", title: "使用空资料库？", description: "新位置将创建空资料库，现有资料仍完整保留在旧位置。切换将在重启后生效。", confirmLabel: "继续选择位置", onConfirm: () => void runAction(async () => { const result = await api.changeVaultLocation(false); if (result) setSettingsNotice(result); }) })} onChangeVault={() => runAction(async () => { const result = await api.changeVaultLocation(true); if (result) setSettingsNotice(result); })} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
       <aside className="sidebar custom-scrollbar">
         <SidebarSection storageKey="ledger-tree" title="台账架构" action={<FolderPlus size={14} />} onAction={() => void addNode()}>
           <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} dropTarget={pointerDropTarget} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
@@ -678,6 +733,8 @@ export default function App() {
         <div className="file-list custom-scrollbar">
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
+            const visibleTags = document.tags.slice(0, data.settings.tagDisplayLimit);
+            const hiddenTagCount = Math.max(0, document.tags.length - visibleTags.length);
             return <div
               className={`file-row ${document.starred ? "starred" : ""} ${selectedIds.has(document.id) ? "selected" : ""} ${pointerDrag?.kind === "files" && pointerDrag.ids.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
               key={document.id} onPointerDown={(event) => beginFilePointerDrag(event, document)}
@@ -685,7 +742,7 @@ export default function App() {
               onContextMenu={(event) => { event.preventDefault(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); setContextMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}
             >
               <input type="checkbox" checked={selectedIds.has(document.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleDocumentSelection(document.id, index)} aria-label={`选择 ${document.name}`} />
-              <span className="file-name"><span className="file-icon-wrap"><FileIcon extension={document.extension} />{document.starred && <Star className="star-corner" size={10} fill="currentColor" />}</span><span><span className="file-title-line"><strong>{document.name}</strong>{document.tags.map((tag) => <button className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}<button className="add-tag-chip" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={11} />标签</button></span><small>{document.extension.toUpperCase()} 文件{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}</small></span></span>
+              <span className="file-name"><span className="file-icon-wrap"><FileIcon extension={document.extension} />{document.starred && <Star className="star-corner" size={10} fill="currentColor" />}</span><span><span className="file-title-line"><strong title={document.name}>{document.name}</strong></span><small className="file-subtitle"><span className="file-kind">{document.extension.toUpperCase()} 文件</span><span className="row-tags">{visibleTags.map((tag) => <button className="tag-chip compact" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}{hiddenTagCount > 0 && <button className="tag-overflow" title={`还有 ${hiddenTagCount} 个标签`} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}>+{hiddenTagCount}</button>}<button className="add-tag-chip compact" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={9} /></button></span>{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}</small></span></span>
               <span>{formatDate(document.modifiedAt)}</span>
               <span>{formatSize(document.size)}</span>
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
@@ -697,7 +754,7 @@ export default function App() {
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
-    {contextMenu && <FileContextMenu menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { setClipboard({ mode: "copy", ids: [...selectedIds] }); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onStar={() => { const target = documents.find((item) => item.id === contextMenu.documentId); setContextMenu(null); if (target) void toggleDocumentStar(target); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
+    {contextMenu && <FileContextMenu deleteMode={data.settings.deleteMode} menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { setClipboard({ mode: "copy", ids: [...selectedIds] }); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onStar={() => { const target = documents.find((item) => item.id === contextMenu.documentId); setContextMenu(null); if (target) void toggleDocumentStar(target); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
     {tagMenu && <TagBubbleMenu menu={tagMenu} documents={documents} tags={data.tags} onToggle={(tag) => void toggleTagForDocuments(tag, tagMenu.documentIds)} onEdit={(tag) => { setTagMenu(null); editTag(tag); }} onCreate={() => { const ids = tagMenu.documentIds; setTagMenu(null); addTag(ids); }} onOpenTag={(tag) => { setTagMenu(null); selectTag(tag); }} />}
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {dialog && <AppDialogModal state={dialog} nodes={data.nodes} onCancel={() => setDialog(null)} />}
@@ -706,6 +763,7 @@ export default function App() {
     {pointerDrag && <div className={`pointer-drag-ghost ${pointerDropTarget ? "can-drop" : ""}`} style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
       {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerDropTarget ? pointerDrag.kind === "files" ? "松开即可移动文件" : pointerDropTarget.position === "inside" ? "松开设为子节点" : pointerDropTarget.position === "before" ? "松开插到节点前" : "松开插到节点后" : "拖到左侧台账节点"}</small></span>
     </div>}
+    {trashOpen && <TrashCenter items={trashItems} path={data.settings.trashPath} onClose={() => setTrashOpen(false)} onReveal={() => void runAction(() => api.revealTrash())} onRestore={(trashId) => void restoreTrashItem(trashId)} onEmpty={requestEmptyTrash} />}
     {notificationCenterOpen && <><button className="notification-scrim" aria-label="关闭通知中心" onClick={() => setNotificationCenterOpen(false)} /><aside className="notification-center"><header><div><Bell size={20} /><span><strong>通知中心</strong><small>有效期告警与历史通知</small></span></div><button title="关闭" onClick={() => setNotificationCenterOpen(false)}><X size={17} /></button></header><section className="notification-summary"><span><AlertTriangle size={16} />当前需关注 <strong>{expiryAlerts.length}</strong> 份</span>{unreadNotificationCount > 0 && <button onClick={markAllNotificationsRead}><Check size={14} />全部已读</button>}</section><div className="notification-history custom-scrollbar">{notifications.length ? notifications.map((item) => <button className={`${item.read ? "read" : "unread"} ${item.tone}`} key={item.id} onClick={() => openNotification(item)}><span className="notification-status" /><span><strong>{item.title}</strong><small>{item.message} · {formatDate(item.createdAt, true)}</small></span>{!item.read && <i>新</i>}</button>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div><footer>最多保留最近 200 条记录</footer></aside></>}
     {loading && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
@@ -713,6 +771,12 @@ export default function App() {
 }
 
 function ROOT_FALLBACK(data: BootstrapData | null) { return data?.nodes.find((node) => node.parentId === null)?.id ?? "root"; }
+
+function deletionCopy(mode: DeleteMode, count: number, noun: string) {
+  if (mode === "system") return { title: `移入系统回收站？`, description: `将把选中的 ${count} 个${noun}移入 Windows 回收站，可从系统回收站恢复。`, confirmLabel: "移入系统回收站" };
+  if (mode === "permanent") return { title: "永久删除？", description: `将永久删除选中的 ${count} 个${noun}，此操作无法撤销。`, confirmLabel: "永久删除" };
+  return { title: "移入应用回收站？", description: `将把选中的 ${count} 个${noun}移入 EazyLedger 回收站，可在应用内恢复。`, confirmLabel: "移入应用回收站" };
+}
 
 function resolvePointerTarget(x: number, y: number, drag: PointerDragState, nodes: NodeItem[]) {
   const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-ledger-node-id]");
@@ -730,9 +794,9 @@ function CommandMenu({ children }: { children: ReactNode }) {
   return <details className="command-menu"><summary title="更多操作"><MoreHorizontal size={18} /></summary><div>{children}</div></details>;
 }
 
-function FileContextMenu({ menu, document, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onStar, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onStar: () => void; onDelete: () => void }) {
+function FileContextMenu({ menu, document, deleteMode, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onStar, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; deleteMode: DeleteMode; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onStar: () => void; onDelete: () => void }) {
   return <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
-    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><button onClick={onStar}><Star size={14} fill={document?.starred ? "currentColor" : "none"} />{document?.starred ? "取消星标" : "设为星标并置顶"}</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />移入应用回收站</button>
+    <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><button onClick={onStar}><Star size={14} fill={document?.starred ? "currentColor" : "none"} />{document?.starred ? "取消星标" : "设为星标并置顶"}</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />{deleteMode === "app" ? "移入应用回收站" : deleteMode === "system" ? "移入系统回收站" : "永久删除"}</button>
   </div>;
 }
 
@@ -847,13 +911,25 @@ function HomeTreeNode({ node, nodes, onOpen, expandedIds, onToggle }: { node: No
   </div>;
 }
 
-function SettingsView({ vaultPath, previewOpen, notice, appVersion, updateUi, onPreviewChange, onCheckUpdate, onInstallUpdate, onRevealVault, onBackup, onRequestEmptyVault, onChangeVault }: { vaultPath: string; previewOpen: boolean; notice: string | null; appVersion: string; updateUi: UpdateUiState; onPreviewChange: (value: boolean) => void; onCheckUpdate: () => Promise<void>; onInstallUpdate: () => Promise<void>; onRevealVault: () => Promise<void>; onBackup: () => Promise<void>; onRequestEmptyVault: () => void; onChangeVault: () => Promise<void> }) {
+function TrashCenter({ items, path, onClose, onReveal, onRestore, onEmpty }: { items: TrashItem[]; path: string; onClose: () => void; onReveal: () => void; onRestore: (trashId: string) => void; onEmpty: () => void }) {
+  return <><button className="trash-scrim" aria-label="关闭回收站" onClick={onClose} /><aside className="trash-center">
+    <header><div><Trash2 size={20} /><span><strong>应用回收站</strong><small>{items.length} 个可恢复文件</small></span></div><button title="关闭" onClick={onClose}><X size={17} /></button></header>
+    <section className="trash-location"><code title={path}>{path}</code><button title="打开回收站文件夹" onClick={onReveal}><FolderOpen size={15} /></button></section>
+    <div className="trash-list custom-scrollbar">{items.length ? items.map((item) => <article className="trash-row" key={item.trashId}>
+      <FileIcon extension={item.extension} /><span><strong title={item.name}>{item.name}</strong><small>{item.originalNodeName ? `原位置：${item.originalNodeName} · ` : ""}{formatDate(item.deletedAt, true)} · {formatSize(item.size)}</small></span>
+      <button title="恢复到原节点" onClick={() => onRestore(item.trashId)}><RotateCcw size={15} />恢复</button>
+    </article>) : <div className="trash-empty"><Trash2 size={32} /><strong>回收站是空的</strong><span>选择“应用回收站”删除方式后，可在这里恢复文件</span></div>}</div>
+    <footer><span>应用回收站中的文件不会自动清理</span><button className="danger" disabled={!items.length} onClick={onEmpty}><Trash2 size={14} />清空回收站</button></footer>
+  </aside></>;
+}
+
+function SettingsView({ vaultPath, settings, previewOpen, notice, appVersion, updateUi, onPreviewChange, onCheckUpdate, onInstallUpdate, onRevealVault, onBackup, onSavePreferences, onRevealTrash, onChangeTrash, onOpenTrash, onRequestEmptyVault, onChangeVault }: { vaultPath: string; settings: BootstrapData["settings"]; previewOpen: boolean; notice: string | null; appVersion: string; updateUi: UpdateUiState; onPreviewChange: (value: boolean) => void; onCheckUpdate: () => Promise<void>; onInstallUpdate: () => Promise<void>; onRevealVault: () => Promise<void>; onBackup: () => Promise<void>; onSavePreferences: (mode: DeleteMode, limit: number) => Promise<void>; onRevealTrash: () => Promise<void>; onChangeTrash: () => Promise<void>; onOpenTrash: () => void; onRequestEmptyVault: () => void; onChangeVault: () => Promise<void> }) {
   return <section className="settings-view custom-scrollbar"><div className="settings-heading"><Settings size={28} /><div><h1>设置</h1><p>调整资料库、界面和文件管理行为</p></div></div>
     {notice && <div className="settings-notice"><Check size={18} /><span>{notice}</span></div>}
-    <section className="settings-group"><header><Database size={19} /><div><h2>资料库存放位置</h2><p>数据库、导入副本、预览缓存和应用回收站</p></div></header><div className="setting-row vertical"><div><strong>当前资料库</strong><code title={vaultPath}>{vaultPath}</code></div><div className="setting-actions"><button onClick={() => void onRevealVault()}><FolderOpen size={14} />打开资料库文件夹</button><button className="secondary" onClick={() => void onBackup()}><Archive size={14} />创建完整备份</button><button className="secondary" onClick={() => void onChangeVault()}>迁移到新位置</button><button className="secondary" onClick={onRequestEmptyVault}>使用空资料库</button></div><small>切换会在重启应用后生效；旧资料库不会自动删除。</small></div></section>
-    <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label></section>
-    <section className="settings-group"><header><Files size={19} /><div><h2>文件管理</h2><p>当前版本的安全策略</p></div></header><div className="setting-row"><div><strong>删除方式</strong><small>文件先移入应用资料库的 trash 目录，不立即物理删除</small></div><span className="setting-value">应用回收站</span></div><div className="setting-row"><div><strong>导入方式</strong><small>默认复制进资料库，原文件保留</small></div><span className="setting-value">复制</span></div></section>
-    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>应用启动后会自动检查一次，也可以随时手动检查</small></div><div className={`update-status ${updateUi.phase}`}><span>{updateUi.phase === "error" ? <AlertTriangle size={17} /> : updateUi.phase === "current" ? <Check size={17} /> : <RefreshCw className={updateUi.phase === "checking" ? "spinning" : ""} size={17} />}</span><div><strong>{updateUi.failure?.title ?? (updateUi.phase === "checking" ? "正在检查更新" : updateUi.phase === "current" ? "更新服务连接正常" : updateUi.phase === "available" ? "发现可用更新" : updateUi.phase === "downloading" ? "正在下载并校验" : "尚未检查更新")}</strong><small>{updateUi.message ?? "点击“检查更新”验证与 GitHub 的连接"}</small>{updateUi.lastCheckedAt && <small>上次尝试：{formatDate(updateUi.lastCheckedAt, true)}</small>}{updateUi.failure && <details><summary>技术信息</summary><code>{updateUi.failure.detail}</code></details>}</div></div>{updateUi.info?.notes && <small className="update-notes">{updateUi.info.notes}</small>}{updateUi.phase === "downloading" && <div className="update-progress"><span style={{ width: `${updateUi.percent ?? 15}%` }} /></div>}<div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />{updateUi.phase === "checking" ? "等待 GitHub" : updateUi.phase === "error" ? "重新检查" : "检查更新"}</button>{updateUi.phase === "available" && <button onClick={() => void onInstallUpdate()}><Download size={14} />下载并安装 v{updateUi.info?.version}</button>}</div><small>安装前请保存正在编辑的文件。资料库和数据库不会随程序更新被覆盖。</small></div></section>
+    <section className="settings-group"><header><Database size={19} /><div><h2>资料库存放位置</h2><p>数据库、导入副本和预览缓存</p></div></header><div className="setting-row vertical"><div><strong>当前资料库</strong><code title={vaultPath}>{vaultPath}</code></div><div className="setting-actions"><button onClick={() => void onRevealVault()}><FolderOpen size={14} />打开资料库文件夹</button><button className="secondary" onClick={() => void onBackup()}><Archive size={14} />创建完整备份</button><button className="secondary" onClick={() => void onChangeVault()}>迁移到新位置</button><button className="secondary" onClick={onRequestEmptyVault}>使用空资料库</button></div><small>切换会在重启应用后生效；旧资料库不会自动删除。</small></div></section>
+    <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label><label className="setting-row"><div><strong>每行显示标签数</strong><small>超出上限的标签折叠为“+N”，文件名始终优先显示</small></div><select value={settings.tagDisplayLimit} onChange={(event) => void onSavePreferences(settings.deleteMode, Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option value={index + 1} key={index + 1}>{index + 1} 个</option>)}</select></label></section>
+    <section className="settings-group"><header><Files size={19} /><div><h2>文件管理</h2><p>选择删除行为并管理应用回收站</p></div></header><label className="setting-row"><div><strong>删除方式</strong><small>{settings.deleteMode === "app" ? "可在 EazyLedger 内恢复，默认且最安全" : settings.deleteMode === "system" ? "交由 Windows 回收站管理" : "立即物理删除，无法恢复"}</small></div><select value={settings.deleteMode} onChange={(event) => void onSavePreferences(event.target.value as DeleteMode, settings.tagDisplayLimit)}><option value="app">应用回收站（推荐）</option><option value="system">系统回收站</option><option value="permanent">直接永久删除</option></select></label><div className="setting-row vertical"><div><strong>应用回收站位置</strong><code title={settings.trashPath}>{settings.trashPath}</code></div><div className="setting-actions"><button onClick={onOpenTrash}><Trash2 size={14} />查看回收站（{settings.trashCount}）</button><button className="secondary" onClick={() => void onRevealTrash()}><FolderOpen size={14} />打开文件夹</button><button className="secondary" onClick={() => void onChangeTrash()}>更改位置</button></div><small>默认位于资料库的 database/trash；更改位置时会迁移现有回收站内容。</small></div><div className="setting-row"><div><strong>从资源管理器粘贴</strong><small>复制文件或文件夹后，在文件视图按 Ctrl+V 即可导入</small></div><span className="setting-value">已启用</span></div></section>
+    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>应用启动后会自动检查一次，也可以随时手动检查</small></div><div className={`update-status ${updateUi.phase}`}><span>{updateUi.phase === "checking" ? "正在连接 GitHub…" : updateUi.phase === "available" ? `发现 v${updateUi.info?.version ?? ""}` : updateUi.phase === "downloading" ? "正在下载、验证并安装更新…" : updateUi.phase === "current" ? "当前已是最新版本" : updateUi.phase === "error" ? updateUi.message : "尚未检查"}</span></div><div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />检查更新</button>{updateUi.phase === "available" && <button className="primary" onClick={() => void onInstallUpdate()}><Download size={14} />下载、安装并重启</button>}</div></div></section>
   </section>;
 }
 

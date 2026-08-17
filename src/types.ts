@@ -27,11 +27,31 @@ export type DocumentItem = {
   tags: Tag[];
 };
 
+export type DeleteMode = "app" | "system" | "permanent";
+
+export type AppSettings = {
+  deleteMode: DeleteMode;
+  trashPath: string;
+  tagDisplayLimit: number;
+  trashCount: number;
+};
+
+export type TrashItem = {
+  trashId: string;
+  id: string;
+  name: string;
+  extension: string;
+  size: number;
+  deletedAt: number;
+  originalNodeName: string | null;
+};
+
 export type BootstrapData = {
   vaultPath: string;
   nodes: NodeItem[];
   tags: Tag[];
   documents: DocumentItem[];
+  settings: AppSettings;
 };
 
 export type Preview =

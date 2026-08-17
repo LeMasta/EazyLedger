@@ -23,9 +23,30 @@ export type UpdateFailure = {
 
 let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
 let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
+const EXPECTED_VERSION_KEY = "eazyledger.update.expected-version";
 
 export async function currentVersion(): Promise<string> {
   return getVersion();
+}
+
+export function previousInstallIssue(current: string): string | null {
+  const expected = localStorage.getItem(EXPECTED_VERSION_KEY);
+  if (!expected) return null;
+  if (compareVersions(current, expected) >= 0) {
+    localStorage.removeItem(EXPECTED_VERSION_KEY);
+    return null;
+  }
+  return `上次计划安装 v${expected}，但当前仍是 v${current}。安装没有真正替换当前程序；请重新更新，若仍失败请确认启动的是同一个 EazyLedger 安装目录。`;
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
 }
 
 export async function findUpdate(): Promise<AvailableUpdate | null> {
@@ -72,21 +93,28 @@ function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
 
 export async function installPendingUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void> {
   if (!pendingUpdate) throw new Error("更新信息已经失效，请重新检查更新");
+  const targetVersion = pendingUpdate.version;
+  localStorage.setItem(EXPECTED_VERSION_KEY, targetVersion);
   let downloaded = 0;
   let total: number | null = null;
-  await pendingUpdate.downloadAndInstall((event) => {
-    if (event.event === "Started") {
-      total = event.data.contentLength ?? null;
-      downloaded = 0;
-    } else if (event.event === "Progress") {
-      downloaded += event.data.chunkLength;
-    }
-    onProgress({
-      downloaded,
-      total,
-      percent: total && total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : null,
+  try {
+    await pendingUpdate.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        total = event.data.contentLength ?? null;
+        downloaded = 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+      }
+      onProgress({
+        downloaded,
+        total,
+        percent: total && total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : null,
+      });
     });
-  });
+  } catch (error) {
+    localStorage.removeItem(EXPECTED_VERSION_KEY);
+    throw error;
+  }
   await relaunch();
 }
 
