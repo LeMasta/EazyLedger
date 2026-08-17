@@ -99,14 +99,14 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
   if (normalized.includes("rate limit") || normalized.includes("429") || normalized.includes("403")) {
     return { kind: "rate-limit", title: "GitHub 暂时限制了请求", message: "已连接到 GitHub，但当前请求受到频率限制。等待几分钟后重试。", detail };
   }
+  if (["error sending request", "network", "connect", "connection", "dns", "tcp", "tls", "offline", "socket"].some((term) => normalized.includes(term))) {
+    return { kind: "network", title: "无法连接 GitHub", message: "自动重试后仍未连接到 GitHub。请检查网络、代理或防火墙；也可从 GitHub Release 手动下载安装包。", detail };
+  }
   if (normalized.includes("404") || normalized.includes("not found") || normalized.includes("latest.json") || normalized.includes("json") || normalized.includes("deserialize") || normalized.includes("parse")) {
     return { kind: "metadata", title: "更新清单不可用", message: "已访问更新地址，但 Release 中缺少或无法解析 latest.json。当前安装不会受影响。", detail };
   }
   if (normalized.includes("signature") || normalized.includes("public key") || normalized.includes("minisign")) {
     return { kind: "signature", title: "更新签名校验失败", message: "安装包或签名与应用内公钥不匹配。为安全起见，更新已停止。", detail };
-  }
-  if (["network", "connect", "connection", "dns", "tcp", "tls", "offline", "request", "socket"].some((term) => normalized.includes(term))) {
-    return { kind: "network", title: "无法连接 GitHub", message: "自动重试后仍未连接到 GitHub。请检查网络、代理或防火墙；也可从 GitHub Release 手动下载安装包。", detail };
   }
   return { kind: "unknown", title: "检查更新失败", message: "更新服务返回了未识别的错误。可展开技术信息用于排查。", detail };
 }
