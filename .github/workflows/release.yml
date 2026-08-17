@@ -1,4 +1,4 @@
-name: 发布 Windows 安装包
+name: 一键发布 Windows 版本
 
 on:
   workflow_dispatch:
@@ -6,8 +6,13 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  publish-windows:
+  release-windows:
+    name: 验证、构建并发布
     runs-on: windows-latest
     permissions:
       contents: write
@@ -30,10 +35,33 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
+      - name: 检查版本号一致性
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+
+          if ($packageVersion -ne $tauriVersion) {
+            throw "package.json ($packageVersion) 与 tauri.conf.json ($tauriVersion) 的版本号不一致。"
+          }
+
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$packageVersion") {
+            throw "标签 ${{ github.ref_name }} 与项目版本 v$packageVersion 不一致。"
+          }
+
+          "准备发布 EazyLedger v$packageVersion"
+
       - name: 安装前端依赖
         run: npm ci
 
-      - name: 构建并发布资料台账
+      - name: 验证前端
+        run: npm run build
+
+      - name: 验证 Tauri 后端
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: 构建安装包并创建 Release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,8 +73,7 @@ jobs:
           releaseBody: |
             EazyLedger Windows 更新。
 
-            首次安装请下载 EXE 安装程序；v0.4.0 及更高版本可在应用的“设置 → 软件更新”中完成后续更新。
+            首次安装请下载 EXE 安装程序；已安装 v0.4.0 及更高版本可在应用的“设置 → 软件更新”中完成后续更新。
           releaseDraft: false
           prerelease: false
           retryAttempts: 2
-

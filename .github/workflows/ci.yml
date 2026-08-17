@@ -1,10 +1,9 @@
-name: 验证 Windows 构建
+name: PR 构建检查
 
 on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   validate:
