@@ -24,6 +24,8 @@ export type UpdateFailure = {
 let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
 let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
 const EXPECTED_VERSION_KEY = "eazyledger.update.expected-version";
+const CHECK_TIMEOUT_MS = 25_000;
+const CHECK_RETRY_DELAY_MS = 1_200;
 
 export async function currentVersion(): Promise<string> {
   return getVersion();
@@ -50,7 +52,7 @@ function compareVersions(left: string, right: string): number {
 }
 
 export async function findUpdate(): Promise<AvailableUpdate | null> {
-  if (!activeCheck) activeCheck = withTimeout(check(), 12_000).finally(() => { activeCheck = null; });
+  if (!activeCheck) activeCheck = checkWithRetry().finally(() => { activeCheck = null; });
   pendingUpdate = await activeCheck;
   if (!pendingUpdate) return null;
   return {
@@ -60,11 +62,39 @@ export async function findUpdate(): Promise<AvailableUpdate | null> {
   };
 }
 
+async function checkWithRetry(): Promise<Awaited<ReturnType<typeof check>>> {
+  try {
+    return await withTimeout(check(), CHECK_TIMEOUT_MS);
+  } catch (firstReason) {
+    if (!shouldRetryCheck(firstReason)) throw firstReason;
+    await delay(CHECK_RETRY_DELAY_MS);
+    try {
+      return await withTimeout(check(), CHECK_TIMEOUT_MS);
+    } catch (retryReason) {
+      throw new Error(`Update check failed after retry. First attempt: ${failureDetail(firstReason)}; retry: ${failureDetail(retryReason)}`);
+    }
+  }
+}
+
+function shouldRetryCheck(reason: unknown): boolean {
+  const normalized = failureDetail(reason).toLowerCase();
+  return ["timeout", "timed out", "network", "connect", "connection", "dns", "tcp", "tls", "offline", "request", "socket"]
+    .some((term) => normalized.includes(term));
+}
+
+function failureDetail(reason: unknown): string {
+  return reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
 export function describeUpdateFailure(reason: unknown): UpdateFailure {
-  const detail = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+  const detail = failureDetail(reason);
   const normalized = detail.toLowerCase();
   if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("超时")) {
-    return { kind: "timeout", title: "GitHub 响应超时", message: "网络已经发起请求，但 12 秒内没有收到完整响应。可以稍后重试。", detail };
+    return { kind: "timeout", title: "GitHub 响应超时", message: "已自动尝试两次连接 GitHub，但每次在 25 秒内都未收到完整响应。请检查代理或稍后重试；也可从 GitHub Release 手动下载安装包。", detail };
   }
   if (normalized.includes("rate limit") || normalized.includes("429") || normalized.includes("403")) {
     return { kind: "rate-limit", title: "GitHub 暂时限制了请求", message: "已连接到 GitHub，但当前请求受到频率限制。等待几分钟后重试。", detail };
@@ -76,7 +106,7 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
     return { kind: "signature", title: "更新签名校验失败", message: "安装包或签名与应用内公钥不匹配。为安全起见，更新已停止。", detail };
   }
   if (["network", "connect", "connection", "dns", "tcp", "tls", "offline", "request", "socket"].some((term) => normalized.includes(term))) {
-    return { kind: "network", title: "无法连接 GitHub", message: "请求尚未成功连接到 GitHub。请检查网络、代理或防火墙后重试。", detail };
+    return { kind: "network", title: "无法连接 GitHub", message: "自动重试后仍未连接到 GitHub。请检查网络、代理或防火墙；也可从 GitHub Release 手动下载安装包。", detail };
   }
   return { kind: "unknown", title: "检查更新失败", message: "更新服务返回了未识别的错误。可展开技术信息用于排查。", detail };
 }
