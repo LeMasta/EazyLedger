@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "drag:default",
     "process:default",
     "updater:default"
   ]
