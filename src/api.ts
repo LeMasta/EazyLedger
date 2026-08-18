@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { demoData, demoPreview } from "./demo";
 import type { AppSettings, BootstrapData, DeleteMode, DocumentItem, Preview, Tag, TrashItem } from "./types";
@@ -41,6 +40,22 @@ export const api = {
   },
   async importClipboardFiles(nodeId: string): Promise<number> {
     return desktop ? invoke("import_clipboard_files", { nodeId }) : 0;
+  },
+  async documentPaths(ids: string[]): Promise<string[]> {
+    return desktop ? invoke("document_paths", { ids }) : [];
+  },
+  async copyDocumentsToClipboard(ids: string[]): Promise<number> {
+    return desktop ? invoke("copy_documents_to_clipboard", { ids }) : 0;
+  },
+  async startNativeFileDrag(paths: string[]): Promise<void> {
+    if (!desktop || !paths.length) return;
+    const onEvent = new Channel<{ result: "Dropped" | "Cancelled"; cursorPos: { x: number; y: number } }>();
+    await invoke("plugin:drag|start_drag", {
+      item: paths,
+      image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wIAAgEBAPzW4ioAAAAASUVORK5CYII=",
+      options: { mode: "copy" },
+      onEvent,
+    });
   },
   async openDocument(id: string): Promise<void> {
     if (desktop) await invoke("open_document", { id });
