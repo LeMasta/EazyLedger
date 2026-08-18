@@ -1,6 +1,6 @@
 [package]
 name = "document-ledger"
-version = "0.5.2"
+version = "0.5.3"
 description = "EazyLedger Windows 本地资料管理工具"
 authors = ["Document Ledger Contributors"]
 edition = "2021"
@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-drag = "2.1.1"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
