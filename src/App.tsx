@@ -28,7 +28,7 @@ type NodeMenuState = { x: number; y: number; node: NodeItem } | null;
 type TagEditorState = { mode: "create" | "edit"; tag?: Tag; documentIds: string[] } | null;
 type PointerDragPayload = { kind: "files"; ids: string[]; label: string } | { kind: "node"; nodeId: string; label: string };
 type PointerDragState = PointerDragPayload & { x: number; y: number };
-type PointerDragCandidate = PointerDragPayload & { pointerId: number; startX: number; startY: number };
+type PointerDragCandidate = PointerDragPayload & { pointerId: number; startX: number; startY: number; nativePaths?: Promise<string[]> };
 type NodeDropPosition = "before" | "inside" | "after";
 type PointerDropTarget = { nodeId: string; position: NodeDropPosition };
 type SortKey = "modified" | "name" | "extension" | "size" | "expiry";
@@ -233,6 +233,13 @@ export default function App() {
       setPointerDrag(active);
       setPointerDropTarget(resolvePointerTarget(event.clientX, event.clientY, active, nodes));
     };
+    const handlePointerLeave = (event: PointerEvent) => {
+      const candidate = pointerCandidateRef.current;
+      if (!candidate || candidate.kind !== "files" || !(event.buttons & 1) || !candidate.nativePaths) return;
+      const paths = candidate.nativePaths;
+      clearPointerDrag();
+      void paths.then((resolved) => api.startNativeFileDrag(resolved)).catch((reason) => setError(`无法拖出文件：${String(reason)}`));
+    };
     const handlePointerEnd = (event: PointerEvent) => {
       const candidate = pointerCandidateRef.current;
       if (!candidate || candidate.pointerId !== event.pointerId) return;
@@ -256,10 +263,12 @@ export default function App() {
     window.addEventListener("pointermove", handlePointerMove, { passive: false });
     window.addEventListener("pointerup", handlePointerEnd, { passive: false });
     window.addEventListener("pointercancel", handlePointerEnd, { passive: false });
+    document.documentElement.addEventListener("pointerleave", handlePointerLeave);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerEnd);
       window.removeEventListener("pointercancel", handlePointerEnd);
+      document.documentElement.removeEventListener("pointerleave", handlePointerLeave);
       document.body.classList.remove("internal-pointer-dragging");
     };
   }, [data?.nodes]);
@@ -304,7 +313,7 @@ export default function App() {
       const target = event.target as HTMLElement;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
       if (event.ctrlKey && event.key.toLowerCase() === "a") { event.preventDefault(); setSelectedIds(new Set(documents.map((item) => item.id))); }
-      if (event.ctrlKey && event.key.toLowerCase() === "c" && selectedIds.size) { event.preventDefault(); setClipboard({ mode: "copy", ids: [...selectedIds] }); }
+      if (event.ctrlKey && event.key.toLowerCase() === "c" && selectedIds.size) { event.preventDefault(); void copyFilesToClipboard([...selectedIds]); }
       if (event.ctrlKey && event.key.toLowerCase() === "x" && selectedIds.size) { event.preventDefault(); setClipboard({ mode: "cut", ids: [...selectedIds] }); }
       if (event.ctrlKey && event.key.toLowerCase() === "v") { event.preventDefault(); void pasteAvailableClipboard(); }
       if (event.key === "F2" && selectedIds.size === 1) { event.preventDefault(); void renameSelected(); }
@@ -423,6 +432,7 @@ export default function App() {
     pointerCandidateRef.current = {
       kind: "files", ids, label: ids.length > 1 ? `${ids.length} 个文件` : document.name,
       pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+      nativePaths: api.documentPaths(ids),
     };
   }
 
@@ -443,19 +453,35 @@ export default function App() {
     await runAction(async () => { await api.copyDocuments(ids, nodeId); await refreshAll(); });
   }
 
+  async function copyFilesToClipboard(ids: string[]) {
+    setClipboard({ mode: "copy", ids });
+    if (!api.isDesktop) return;
+    try {
+      const count = await api.copyDocumentsToClipboard(ids);
+      if (!count) setError("没有可复制的资料");
+    } catch (reason) {
+      setError(`无法复制到 Windows 文件剪贴板：${String(reason)}`);
+    }
+  }
+
   async function pasteAvailableClipboard() {
     if (activeTab.view === "settings") return;
     const target = activeTab.nodeId ?? ROOT_FALLBACK(data);
+    let imported = 0;
+    await runAction(async () => {
+      imported = await api.importClipboardFiles(target);
+      if (imported) {
+        setClipboard(null);
+        await refreshAll();
+      }
+    });
+    if (imported) return;
     if (clipboard) {
       if (clipboard.mode === "copy") await copyFiles(clipboard.ids, target);
       else { await moveFiles(clipboard.ids, target); setClipboard(null); }
       return;
     }
-    await runAction(async () => {
-      const count = await api.importClipboardFiles(target);
-      if (!count) { setError("剪贴板中没有可导入的文件或文件夹"); return; }
-      await refreshAll();
-    });
+    setError("剪贴板中没有可导入的文件或文件夹");
   }
 
   async function openTrashCenter() {
@@ -720,7 +746,7 @@ export default function App() {
       <section className="file-pane">
         {selectedIds.size > 1 && <div className="selection-bar">
           <CheckSquare size={16} /><strong>已选 {selectedIds.size} 项</strong>
-          <button onClick={() => setClipboard({ mode: "copy", ids: [...selectedIds] })}><Copy size={14} />复制</button>
+          <button onClick={() => void copyFilesToClipboard([...selectedIds])}><Copy size={14} />复制</button>
           <button onClick={() => setClipboard({ mode: "cut", ids: [...selectedIds] })}><Scissors size={14} />剪切</button>
           <button onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setTagMenu({ x: rect.left, y: rect.bottom, documentIds: [...selectedIds] }); }}><Tags size={14} />标签</button>
           <button className="danger" onClick={() => deleteSelected()}><Trash2 size={14} />删除</button>
@@ -754,7 +780,7 @@ export default function App() {
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
-    {contextMenu && <FileContextMenu deleteMode={data.settings.deleteMode} menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { setClipboard({ mode: "copy", ids: [...selectedIds] }); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onStar={() => { const target = documents.find((item) => item.id === contextMenu.documentId); setContextMenu(null); if (target) void toggleDocumentStar(target); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
+    {contextMenu && <FileContextMenu deleteMode={data.settings.deleteMode} menu={contextMenu} document={documents.find((item) => item.id === contextMenu.documentId)} onOpen={() => { setContextMenu(null); void api.openDocument(contextMenu.documentId); }} onReveal={() => { setContextMenu(null); void api.revealDocument(contextMenu.documentId); }} onCopy={() => { void copyFilesToClipboard([...selectedIds]); setContextMenu(null); }} onCut={() => { setClipboard({ mode: "cut", ids: [...selectedIds] }); setContextMenu(null); }} onRename={() => { setContextMenu(null); renameSelected(); }} onExpiry={() => { setExpiryMenu({ x: contextMenu.x, y: contextMenu.y, documentId: contextMenu.documentId }); setContextMenu(null); }} onStar={() => { const target = documents.find((item) => item.id === contextMenu.documentId); setContextMenu(null); if (target) void toggleDocumentStar(target); }} onDelete={() => { setContextMenu(null); deleteSelected(); }} />}
     {tagMenu && <TagBubbleMenu menu={tagMenu} documents={documents} tags={data.tags} onToggle={(tag) => void toggleTagForDocuments(tag, tagMenu.documentIds)} onEdit={(tag) => { setTagMenu(null); editTag(tag); }} onCreate={() => { const ids = tagMenu.documentIds; setTagMenu(null); addTag(ids); }} onOpenTag={(tag) => { setTagMenu(null); selectTag(tag); }} />}
     {tagEditor && <TagEditorModal state={tagEditor} suggestedColor={tagColors[data.tags.length % tagColors.length]} onCancel={() => setTagEditor(null)} onSave={(name, color) => void saveTagEditor(name, color)} />}
     {dialog && <AppDialogModal state={dialog} nodes={data.nodes} onCancel={() => setDialog(null)} />}

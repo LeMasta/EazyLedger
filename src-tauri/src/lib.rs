@@ -161,6 +161,7 @@ enum Preview {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -194,6 +195,8 @@ pub fn run() {
             search_documents,
             import_paths,
             import_clipboard_files,
+            document_paths,
+            copy_documents_to_clipboard,
             open_document,
             reveal_document,
             reveal_vault,
@@ -466,23 +469,64 @@ fn import_paths(
     load_documents(&connection)
 }
 
+fn decode_hex_path(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.len() % 2 != 0 { return None; }
+    let bytes = (0..line.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&line[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+#[tauri::command]
+fn document_paths(ids: Vec<String>, state: State<AppState>) -> Result<Vec<String>, String> {
+    ids.into_iter()
+        .map(|id| document_path(&id, &state.vault_path).map(|path| path.to_string_lossy().to_string()))
+        .collect()
+}
+
+#[tauri::command]
+fn copy_documents_to_clipboard(ids: Vec<String>, state: State<AppState>) -> Result<usize, String> {
+    let paths = document_paths(ids, state)?;
+    if paths.is_empty() { return Ok(0); }
+
+    #[cfg(target_os = "windows")]
+    {
+        let payload = serde_json::to_string(&paths).map_err(|error| error.to_string())?;
+        let script = "Add-Type -AssemblyName System.Windows.Forms; $paths = @(ConvertFrom-Json -InputObject $env:EAZYLEDGER_CLIPBOARD_FILES); $files = New-Object System.Collections.Specialized.StringCollection; foreach ($path in $paths) { [void]$files.Add([string]$path) }; [System.Windows.Forms.Clipboard]::SetFileDropList($files)";
+        let output = Command::new("powershell.exe")
+            .args(["-Sta", "-NoProfile", "-NonInteractive", "-Command", script])
+            .env("EAZYLEDGER_CLIPBOARD_FILES", payload)
+            .output()
+            .map_err(|error| format!("无法写入 Windows 文件剪贴板：{error}"))?;
+        if !output.status.success() {
+            return Err("无法把资料写入 Windows 文件剪贴板，请稍后重试".into());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    return Err("当前系统暂不支持文件剪贴板导出".into());
+
+    Ok(paths.len())
+}
+
 #[tauri::command]
 fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usize, String> {
     #[cfg(target_os = "windows")]
     let paths: Vec<String> = {
+        let script = "$items = @(Get-Clipboard -Format FileDropList -ErrorAction SilentlyContinue); foreach ($item in $items) { [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($item.FullName)).Replace('-', '') }";
         let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "$items = @(Get-Clipboard -Format FileDropList -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }); ConvertTo-Json -Compress -InputObject $items"])
+            .args(["-Sta", "-NoProfile", "-NonInteractive", "-Command", script])
             .output()
             .map_err(|error| format!("无法读取系统剪贴板：{error}"))?;
         if !output.status.success() {
             return Err("无法读取系统剪贴板中的文件，请确认文件仍存在".into());
         }
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Array(Vec::new()));
-        match value {
-            serde_json::Value::Array(items) => items.into_iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
-            serde_json::Value::String(item) => vec![item],
-            _ => Vec::new(),
-        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(decode_hex_path)
+            .collect()
     };
     #[cfg(not(target_os = "windows"))]
     let paths: Vec<String> = Vec::new();
