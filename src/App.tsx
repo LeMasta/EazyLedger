@@ -1216,8 +1216,9 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     };
   }, []);
   if (!document) return <aside className="preview-pane preview-empty custom-scrollbar"><Image size={36} /><p>单选文件以查看预览和属性</p></aside>;
-  const canTransform = preview?.kind === "image" || preview?.kind === "pdf";
-  const canPan = canTransform && zoom > 1;
+  const canRotate = preview?.kind === "image" || preview?.kind === "pdf";
+  const canZoom = canRotate || preview?.kind === "docx";
+  const canPan = canRotate && zoom > 1;
   const transformStyle = { transform: `translate3d(${pan.x}px, ${pan.y}px, 0) rotate(${rotation}deg) scale(${zoom})` } as CSSProperties;
   const resetView = () => {
     setRotation(0);
@@ -1230,7 +1231,7 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     return next;
   });
   const handlePreviewWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey || !canTransform) return;
+    if (!event.ctrlKey || !canZoom) return;
     event.preventDefault();
     changeZoom(event.deltaY < 0 ? .25 : -.25);
   };
@@ -1259,9 +1260,9 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     await api.setDocumentTags(document!.id, ids.includes(tag.id) ? ids.filter((id) => id !== tag.id) : [...ids, tag.id]);
     await onChanged();
   }
-  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在读取预览…</span>}{preview?.kind === "loading" && <span className="preview-loading">{preview.message}</span>}{preview?.kind === "image" && <div className="preview-media-transform" style={transformStyle}><img src={preview.path} alt={document.name} draggable={false} /></div>}{preview?.kind === "pdf" && <div className="preview-media-transform" style={transformStyle}><iframe src={preview.path} title={document.name} /></div>}{preview?.kind === "docx" && <DocxPreview path={preview.path} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
-  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canTransform} title="向左旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value - 90); }}><RotateCcw size={15} /></button><button disabled={!canTransform} title="向右旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value + 90); }}><RotateCw size={15} /></button><span /><button disabled={!canTransform || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canTransform} className="zoom-value" title="适应窗口并复位" onClick={resetView}>{Math.round(zoom * 100)}%</button><button disabled={!canTransform || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
-  const interactionCapture = (controlPressed || canPan) && canTransform ? <div
+  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在读取预览…</span>}{preview?.kind === "loading" && <span className="preview-loading">{preview.message}</span>}{preview?.kind === "image" && <div className="preview-media-transform" style={transformStyle}><img src={preview.path} alt={document.name} draggable={false} /></div>}{preview?.kind === "pdf" && <div className="preview-media-transform" style={transformStyle}><iframe src={preview.path} title={document.name} /></div>}{preview?.kind === "docx" && <DocxPreview path={preview.path} zoom={zoom} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
+  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canRotate} title="向左旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value - 90); }}><RotateCcw size={15} /></button><button disabled={!canRotate} title="向右旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value + 90); }}><RotateCw size={15} /></button><span /><button disabled={!canZoom || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canZoom} className="zoom-value" title="适应窗口并复位" onClick={resetView}>{Math.round(zoom * 100)}%</button><button disabled={!canZoom || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
+  const interactionCapture = (controlPressed || canPan) && canZoom ? <div
     className={`preview-pan-capture ${canPan ? "can-pan" : ""} ${panning ? "panning" : ""}`}
     title={canPan ? "按住鼠标左键拖动查看；Ctrl + 滚轮缩放" : "Ctrl + 滚轮缩放预览"}
     onWheel={handlePreviewWheel}
@@ -1277,7 +1278,7 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
   </aside>;
 }
 
-function DocxPreview({ path }: { path: string }) {
+function DocxPreview({ path, zoom }: { path: string; zoom: number }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState("正在排版 Word 文档…");
   useEffect(() => {
@@ -1296,7 +1297,7 @@ function DocxPreview({ path }: { path: string }) {
     }).catch((reason) => { if (!cancelled) setMessage(`Word 预览失败：${String(reason)}`); });
     return () => { cancelled = true; container.replaceChildren(); };
   }, [path]);
-  return <div className="docx-preview custom-scrollbar">{message && <span className="preview-loading">{message}</span>}<div ref={containerRef} /></div>;
+  return <div className="docx-preview custom-scrollbar">{message && <span className="preview-loading">{message}</span>}<div ref={containerRef} style={{ "--docx-zoom": zoom } as CSSProperties} /></div>;
 }
 
 function FileIcon({ extension }: { extension: string }) {
