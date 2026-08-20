@@ -6,23 +6,81 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
-  release-windows:
-    name: 验证、构建并发布
-    runs-on: windows-latest
-    permissions:
-      contents: write
-
+  create-tag:
+    name: 从 main 创建版本标签
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
-      - name: 检出源码
-        uses: actions/checkout@v7
+      - name: 检出 main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 读取版本并创建标签
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
+
+          if [ "$VERSION" != "$TAURI_VERSION" ] || [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::package.json、tauri.conf.json 与 Cargo.toml 的版本号不一致"
+            exit 1
+          fi
+
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          CURRENT_COMMIT="$(git rev-parse HEAD)"
+
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "v$VERSION")"
+            if [ "$TAG_COMMIT" != "$CURRENT_COMMIT" ]; then
+              echo "::error::标签 v$VERSION 已存在，但不指向当前 main；请先提升版本号"
+              exit 1
+            fi
+            echo "::notice::标签 v$VERSION 已指向当前 main，将继续发版"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "EazyLedger v$VERSION"
+          git push origin "v$VERSION"
+
+  release:
+    name: 验证、构建并发布
+    needs: create-tag
+    if: >-
+      always() &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && needs.create-tag.result == 'success'))
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出发布标签
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', needs.create-tag.outputs.version) || github.ref }}
+          fetch-depth: 0
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
@@ -35,21 +93,32 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
-      - name: 检查版本号一致性
+      - name: 验证标签来自 main 且版本一致
+        id: version
         shell: pwsh
         run: |
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $tagName = "v$packageVersion"
 
-          if ($packageVersion -ne $tauriVersion) {
-            throw "package.json ($packageVersion) 与 tauri.conf.json ($tauriVersion) 的版本号不一致。"
+          if ($packageVersion -ne $tauriVersion -or $packageVersion -ne $cargoVersion) {
+            throw "package.json、tauri.conf.json 与 Cargo.toml 的版本号不一致。"
+          }
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne $tagName) {
+            throw "标签 ${{ github.ref_name }} 与项目版本 $tagName 不一致。"
           }
 
-          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$packageVersion") {
-            throw "标签 ${{ github.ref_name }} 与项目版本 v$packageVersion 不一致。"
+          git fetch origin main --no-tags
+          $tagCommit = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor $tagCommit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "发布标签不属于 main 的提交历史，拒绝发版。"
           }
 
-          "准备发布 EazyLedger v$packageVersion"
+          "value=$packageVersion" >> $env:GITHUB_OUTPUT
+          "tag=$tagName" >> $env:GITHUB_OUTPUT
+          "准备发布 EazyLedger $tagName"
 
       - name: 安装前端依赖
         run: npm ci
@@ -62,6 +131,7 @@ jobs:
         run: cargo check
 
       - name: 构建安装包并创建 Release
+        id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,7 +143,37 @@ jobs:
           releaseBody: |
             EazyLedger Windows 更新。
 
-            首次安装请下载 EXE 安装程序；已安装 v0.4.0 及更高版本可在应用的“设置 → 软件更新”中完成后续更新。
+            首次安装或手动更新可直接运行 EXE 覆盖安装；已安装版本也可在“设置 → 软件更新”中完成更新。
           releaseDraft: false
           prerelease: false
           retryAttempts: 2
+          updaterJsonPreferNsis: true
+
+      - name: 生成稳定更新清单
+        shell: pwsh
+        run: |
+          ./.github/scripts/publish-updater-manifest.ps1 `
+            -Repository "${{ github.repository }}" `
+            -Tag "${{ steps.version.outputs.tag }}" `
+            -Token "${{ secrets.GITHUB_TOKEN }}" `
+            -OutputPath "$env:RUNNER_TEMP/latest.json"
+
+      - name: 将稳定更新清单同步到 main
+        shell: pwsh
+        run: |
+          git fetch origin main
+          git switch --force-create main origin/main
+          New-Item -ItemType Directory -Force update | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/latest.json" "update/latest.json" -Force
+
+          git diff --quiet -- update/latest.json
+          if ($LASTEXITCODE -eq 0) {
+            "稳定更新清单没有变化"
+            exit 0
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- update/latest.json
+          git commit -m "chore: publish updater manifest for ${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
