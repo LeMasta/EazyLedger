@@ -102,6 +102,10 @@ export default function App() {
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
   const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
+  const visibleChildNodes = useMemo(() => {
+    if (!data || activeTab.view !== "files" || !activeTab.nodeId || activeTab.tagId || activeTab.query || searchTagIds.length) return [];
+    return data.nodes.filter((node) => node.parentId === activeTab.nodeId).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-CN"));
+  }, [activeTab.nodeId, activeTab.query, activeTab.tagId, activeTab.view, data, searchTagIds.length]);
   const expiryAlerts = useMemo(() => (data?.documents ?? [])
     .map((document) => ({ document, expiry: expiryState(document.expiresAt) }))
     .filter((item): item is { document: DocumentItem; expiry: ExpiryState } => Boolean(item.expiry && item.expiry.days <= 30))
@@ -842,6 +846,22 @@ export default function App() {
           <span className="sort-heading"><button onClick={() => setSort("name")}>文件 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button><span className="star-column" title="星标文件始终置顶"><Star size={13} /></span>
         </div>
         <div className="file-list custom-scrollbar">
+          {visibleChildNodes.map((node) => <div
+            className="file-row folder-row"
+            key={`node:${node.id}`}
+            role="button"
+            tabIndex={0}
+            aria-label={`进入文件夹 ${node.name}`}
+            onClick={() => setSelectedIds(new Set())}
+            onDoubleClick={() => selectNode(node)}
+            onKeyDown={(event) => { if (event.key === "Enter") selectNode(node); }}
+          >
+            <span className="folder-row-spacer" aria-hidden="true" />
+            <span className="file-name"><span className="file-icon-wrap"><Folder className="folder-list-icon" size={30} /></span><span><span className="file-title-line"><strong title={node.name}>{node.name}</strong></span><small className="file-subtitle"><span className="file-kind">文件夹</span><span>{node.documentCount} 项资料</span></small></span></span>
+            <span>—</span>
+            <span>—</span>
+            <ChevronRight className="folder-row-enter" size={17} aria-hidden="true" />
+          </div>)}
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
             const visibleTags = document.tags.slice(0, data.settings.tagDisplayLimit);
@@ -859,9 +879,9 @@ export default function App() {
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
-          {!documents.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
+          {!documents.length && !visibleChildNodes.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
-        <footer className="statusbar"><span>{documents.length} 个项目</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
+        <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
