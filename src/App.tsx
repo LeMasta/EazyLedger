@@ -202,6 +202,7 @@ export default function App() {
 
   useEffect(() => {
     if (!api.isDesktop) return;
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     let refreshTimer: number | undefined;
     void getCurrentWindow().listen("vault-changed", () => {
@@ -209,8 +210,12 @@ export default function App() {
       refreshTimer = window.setTimeout(() => {
         void refreshAll().catch((reason) => setError(`资料库自动刷新失败：${String(reason)}`));
       }, 300);
-    }).then((fn) => (unlisten = fn));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
     return () => {
+      disposed = true;
       unlisten?.();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
@@ -219,6 +224,7 @@ export default function App() {
   useEffect(() => {
     if (!api.isDesktop) return;
     const nodes = data?.nodes ?? [];
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === "enter" || event.payload.type === "over") {
@@ -243,8 +249,14 @@ export default function App() {
           await importPaths(payload.paths, targetNodeId ?? activeTab.nodeId ?? "root");
         })();
       }
-    }).then((fn) => (unlisten = fn));
-    return () => unlisten?.();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [activeTab.nodeId, data?.nodes]);
 
   useEffect(() => {
