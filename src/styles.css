@@ -765,3 +765,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .file-subtitle > .expiry-chip { flex: none; height: 15px !important; padding: 0 5px !important; border-radius: 5px !important; font-size: 8px; }
 .file-subtitle > .expiry-chip svg { width: 9px; height: 9px; }
 .file-subtitle > .row-tags { flex: 1 1 auto; }
+
+
+/* v0.5.7 — child nodes in the file view */
+.folder-row { cursor: default; }
+.folder-row:focus-visible { outline: 2px solid #76aaf0; outline-offset: -2px; background: #eef5ff; }
+.folder-row-spacer { width: 15px; height: 15px; }
+.file-icon-wrap > .folder-list-icon { width: 32px; height: 32px; padding: 5px; border-radius: 7px; color: #d18a16; fill: #fff1bf; background: #fff8e8; }
+.folder-row-enter { justify-self: center; color: #8995a3; }
+.folder-row:hover .folder-row-enter { color: #3478c7; transform: translateX(1px); }
