@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use clipboard_win::{formats, Clipboard, Format, Getter, Setter};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -469,17 +471,6 @@ fn import_paths(
     load_documents(&connection)
 }
 
-fn decode_hex_path(line: &str) -> Option<String> {
-    let line = line.trim();
-    if line.is_empty() || line.len() % 2 != 0 { return None; }
-    let bytes = (0..line.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&line[index..index + 2], 16))
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    String::from_utf8(bytes).ok()
-}
-
 #[tauri::command]
 fn document_paths(ids: Vec<String>, state: State<AppState>) -> Result<Vec<String>, String> {
     ids.into_iter()
@@ -494,16 +485,11 @@ fn copy_documents_to_clipboard(ids: Vec<String>, state: State<AppState>) -> Resu
 
     #[cfg(target_os = "windows")]
     {
-        let payload = serde_json::to_string(&paths).map_err(|error| error.to_string())?;
-        let script = "Add-Type -AssemblyName System.Windows.Forms; $paths = @(ConvertFrom-Json -InputObject $env:EAZYLEDGER_CLIPBOARD_FILES); $files = New-Object System.Collections.Specialized.StringCollection; foreach ($path in $paths) { [void]$files.Add([string]$path) }; [System.Windows.Forms.Clipboard]::SetFileDropList($files)";
-        let output = Command::new("powershell.exe")
-            .args(["-Sta", "-NoProfile", "-NonInteractive", "-Command", script])
-            .env("EAZYLEDGER_CLIPBOARD_FILES", payload)
-            .output()
+        let _clipboard = Clipboard::new_attempts(10)
+            .map_err(|error| format!("无法打开 Windows 文件剪贴板：{error}"))?;
+        formats::FileList
+            .write_clipboard(paths.as_slice())
             .map_err(|error| format!("无法写入 Windows 文件剪贴板：{error}"))?;
-        if !output.status.success() {
-            return Err("无法把资料写入 Windows 文件剪贴板，请稍后重试".into());
-        }
     }
     #[cfg(not(target_os = "windows"))]
     return Err("当前系统暂不支持文件剪贴板导出".into());
@@ -515,18 +501,17 @@ fn copy_documents_to_clipboard(ids: Vec<String>, state: State<AppState>) -> Resu
 fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usize, String> {
     #[cfg(target_os = "windows")]
     let paths: Vec<String> = {
-        let script = "$items = @(Get-Clipboard -Format FileDropList -ErrorAction SilentlyContinue); foreach ($item in $items) { [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($item.FullName)).Replace('-', '') }";
-        let output = Command::new("powershell.exe")
-            .args(["-Sta", "-NoProfile", "-NonInteractive", "-Command", script])
-            .output()
-            .map_err(|error| format!("无法读取系统剪贴板：{error}"))?;
-        if !output.status.success() {
-            return Err("无法读取系统剪贴板中的文件，请确认文件仍存在".into());
+        if !formats::FileList.is_format_avail() {
+            Vec::new()
+        } else {
+            let _clipboard = Clipboard::new_attempts(10)
+                .map_err(|error| format!("无法打开 Windows 文件剪贴板：{error}"))?;
+            let mut paths = Vec::new();
+            formats::FileList
+                .read_clipboard(&mut paths)
+                .map_err(|error| format!("无法读取 Windows 文件剪贴板：{error}"))?;
+            paths
         }
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(decode_hex_path)
-            .collect()
     };
     #[cfg(not(target_os = "windows"))]
     let paths: Vec<String> = Vec::new();

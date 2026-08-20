@@ -1,6 +1,6 @@
 [package]
 name = "document-ledger"
-version = "0.5.3"
+version = "0.5.4"
 description = "EazyLedger Windows 本地资料管理工具"
 authors = ["Document Ledger Contributors"]
 edition = "2021"
@@ -27,3 +27,6 @@ zip = "2"
 regex = "1"
 notify = "7"
 open = "5"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4.1"
