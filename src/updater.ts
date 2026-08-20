@@ -25,6 +25,8 @@ let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
 let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
 const EXPECTED_VERSION_KEY = "eazyledger.update.expected-version";
 const CHECK_TIMEOUT_MS = 8_000;
+const STABLE_MANIFEST_URL = "https://raw.githubusercontent.com/LeMasta/EazyLedger/main/update/latest.json";
+const WEBVIEW_PROBE_TIMEOUT_MS = 5_000;
 
 export async function currentVersion(): Promise<string> {
   return getVersion();
@@ -50,8 +52,50 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+async function fetchPublishedVersion(): Promise<string> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), WEBVIEW_PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(STABLE_MANIFEST_URL, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error(`更新清单请求失败（${response.status}）`);
+    const manifest = await response.json() as { version?: unknown };
+    if (typeof manifest.version !== "string" || !manifest.version.trim()) throw new Error("更新清单缺少版本号");
+    return manifest.version.trim();
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function performUpdateCheck(): Promise<Awaited<ReturnType<typeof check>>> {
+  const installedVersion = await getVersion();
+  const nativePromise = check({ timeout: CHECK_TIMEOUT_MS });
+  const manifestOutcome = fetchPublishedVersion().then(
+    (value) => ({ kind: "manifest-ok" as const, value }),
+    (error: unknown) => ({ kind: "manifest-error" as const, error }),
+  );
+  const nativeOutcome = nativePromise.then(
+    (value) => ({ kind: "native-ok" as const, value }),
+    (error: unknown) => ({ kind: "native-error" as const, error }),
+  );
+
+  const first = await Promise.race([manifestOutcome, nativeOutcome]);
+  if (first.kind === "native-ok") return first.value;
+  if (first.kind === "manifest-ok") {
+    if (compareVersions(installedVersion, first.value) >= 0) {
+      void nativePromise.catch(() => undefined);
+      return null;
+    }
+    return nativePromise;
+  }
+  if (first.kind === "manifest-error") return nativePromise;
+
+  const manifest = await manifestOutcome;
+  if (manifest.kind === "manifest-ok" && compareVersions(installedVersion, manifest.value) >= 0) return null;
+  throw first.error;
+}
+
 export async function findUpdate(): Promise<AvailableUpdate | null> {
-  if (!activeCheck) activeCheck = check({ timeout: CHECK_TIMEOUT_MS }).finally(() => { activeCheck = null; });
+  if (!activeCheck) activeCheck = performUpdateCheck().finally(() => { activeCheck = null; });
   pendingUpdate = await activeCheck;
   if (!pendingUpdate) return null;
   return {
