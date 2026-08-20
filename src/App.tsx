@@ -9,10 +9,10 @@ import {
   PanelRightOpen, Pencil, Plus, RefreshCw, RotateCcw, RotateCw, Scissors, Search, Tags, Trash2, X, House, Files, Settings, Database, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { api } from "./api";
-import type { AppTab, BootstrapData, DeleteMode, DocumentItem, NodeItem, Preview, Tag, TrashItem } from "./types";
+import type { AppTab, AppTabHistoryEntry, BootstrapData, DeleteMode, DocumentItem, NodeItem, Preview, Tag, TrashItem } from "./types";
 import { currentVersion, describeUpdateFailure, findUpdate, installPendingUpdate, previousInstallIssue, type AvailableUpdate, type UpdateFailure } from "./updater";
 
-const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "" };
+const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "", history: [] };
 const tagColors = [
   "#2563eb", "#4f46e5", "#7c3aed", "#a855f7", "#db2777",
   "#e11d48", "#ef4444", "#f97316", "#f59e0b", "#eab308",
@@ -169,7 +169,11 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      try { await refreshBootstrap(); await refreshDocuments(initialTab); }
+      try {
+        await refreshBootstrap();
+        await refreshDocuments(initialTab);
+        if (api.isDesktop) void api.warmDocPreviews().catch((reason) => console.info("DOC preview warmup skipped", reason));
+      }
       catch (reason) { setError(String(reason)); }
       finally { setLoading(false); }
     })();
@@ -299,8 +303,26 @@ export default function App() {
 
   useEffect(() => {
     if (!selected) { setPreview(null); return; }
+    let cancelled = false;
+    let retryTimer: number | undefined;
     setPreview(null);
-    void api.getPreview(selected.id).then(setPreview).catch((reason) => setError(String(reason)));
+
+    const loadPreview = async () => {
+      try {
+        const next = await api.getPreview(selected.id);
+        if (cancelled) return;
+        setPreview(next);
+        if (next.kind === "loading") retryTimer = window.setTimeout(() => void loadPreview(), 350);
+      } catch (reason) {
+        if (!cancelled) setError(String(reason));
+      }
+    };
+
+    void loadPreview();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, [selected?.id]);
 
   useEffect(() => { localStorage.setItem("document-ledger.preview-open", String(previewOpen)); }, [previewOpen]);
@@ -352,17 +374,42 @@ export default function App() {
     setTabs((current) => current.map((tab) => tab.id === activeTabId ? { ...tab, ...patch } : tab));
   }
 
+  function locationOf(tab: AppTab): AppTabHistoryEntry {
+    return { title: tab.title, view: tab.view, nodeId: tab.nodeId, tagId: tab.tagId, query: tab.query };
+  }
+
+  function navigateActive(patch: Partial<AppTab>) {
+    setTabs((current) => current.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const next = { ...tab, ...patch };
+      const before = locationOf(tab);
+      const after = locationOf(next);
+      const changed = before.title !== after.title || before.view !== after.view || before.nodeId !== after.nodeId || before.tagId !== after.tagId || before.query !== after.query;
+      return changed ? { ...next, history: [...tab.history, before].slice(-50) } : next;
+    }));
+  }
+
+  function goBack() {
+    setTabs((current) => current.map((tab) => {
+      if (tab.id !== activeTabId || !tab.history.length) return tab;
+      const previous = tab.history[tab.history.length - 1];
+      return { ...tab, ...previous, history: tab.history.slice(0, -1) };
+    }));
+    setSearchTagIds([]);
+    setSelectedIds(new Set());
+  }
+
   function selectNode(node: NodeItem) {
     setTagMenu(null);
     setSearchTagIds([]);
-    updateActive({ title: node.name, view: "files", nodeId: node.id, tagId: null, query: "" });
+    navigateActive({ title: node.name, view: "files", nodeId: node.id, tagId: null, query: "" });
     setSelectedIds(new Set());
   }
 
   function selectTag(tag: Tag) {
     setTagMenu(null);
     setSearchTagIds([]);
-    updateActive({ title: `# ${tag.name}`, view: "files", nodeId: null, tagId: tag.id, query: "" });
+    navigateActive({ title: `# ${tag.name}`, view: "files", nodeId: null, tagId: tag.id, query: "" });
     setSelectedIds(new Set());
   }
 
@@ -387,15 +434,15 @@ export default function App() {
   }
 
   async function importPaths(paths: string[], nodeId: string) {
-    await runAction(async () => { await api.importPaths(paths, nodeId); await refreshAll(); });
+    await runAction(async () => { await api.importPaths(paths, nodeId); await refreshAll(); await api.warmDocPreviews(); });
   }
 
   async function chooseImport() {
-    await runAction(async () => { await api.chooseAndImport(activeTab.nodeId ?? "root"); await refreshAll(); });
+    await runAction(async () => { await api.chooseAndImport(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
   }
 
   async function chooseImportFolder() {
-    await runAction(async () => { await api.chooseAndImportFolder(activeTab.nodeId ?? "root"); await refreshAll(); });
+    await runAction(async () => { await api.chooseAndImportFolder(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
   }
 
   function addNode(parentId = activeTab.nodeId ?? "root") {
@@ -409,14 +456,27 @@ export default function App() {
     setTagEditor({ mode: "create", documentIds });
   }
 
-  function goHome() { updateActive({ ...initialTab, id: activeTabId }); setSearchTagIds([]); setSelectedIds(new Set()); }
+  function goHome() {
+    navigateActive({ title: "主页", view: "home", nodeId: null, tagId: null, query: "" });
+    setSearchTagIds([]);
+    setSelectedIds(new Set());
+  }
 
   function toggleSearchTag(tagId: string) {
     setSearchTagIds((current) => current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId]);
-    if (activeTab.view !== "files") updateActive({ view: "files", title: "搜索" });
+    if (activeTab.view !== "files") navigateActive({ view: "files", title: "搜索" });
   }
 
-  function openSettings() { updateActive({ title: "设置", view: "settings", nodeId: null, tagId: null, query: "" }); setSelectedIds(new Set()); }
+  function updateSearchQuery(query: string) {
+    const patch: Partial<AppTab> = { view: query || searchTagIds.length ? "files" : activeTab.view, title: query ? "搜索" : activeTab.title, query };
+    if (query && activeTab.view !== "files") navigateActive(patch);
+    else updateActive(patch);
+  }
+
+  function openSettings() {
+    navigateActive({ title: "设置", view: "settings", nodeId: null, tagId: null, query: "" });
+    setSelectedIds(new Set());
+  }
 
   function goUp() {
     if (activeTab.view === "home") return;
@@ -497,6 +557,7 @@ export default function App() {
       if (imported) {
         setClipboard(null);
         await refreshAll();
+        await api.warmDocPreviews();
       }
     });
     if (imported) return;
@@ -734,9 +795,9 @@ export default function App() {
       <button className="new-tab" title="新建标签页" onClick={addTab}><Plus size={17} /></button>
     </nav>
     <section className="toolbar">
-      <div className="nav-buttons"><button onClick={goHome} disabled={activeTab.view === "home"} title="主页"><ArrowLeft size={18} /></button><button onClick={goUp} disabled={activeTab.view === "home"} title="上一级"><ArrowUp size={18} /></button><button title="刷新" onClick={() => void refreshAll()}><RefreshCw size={17} /></button></div>
+      <div className="nav-buttons"><button onClick={goBack} disabled={!activeTab.history.length} title="返回"><ArrowLeft size={18} /></button><button onClick={goUp} disabled={activeTab.view === "home"} title="上一级"><ArrowUp size={18} /></button></div>
       <div className="address-bar"><button className="home-crumb" onClick={goHome}><House size={16} />主页</button>{breadcrumb.map((part) => <span className="crumb" key={part.id} onClick={() => selectNode(part)}><ChevronRight size={14} />{part.name}</span>)}{activeTab.tagId && <span className="crumb"><ChevronRight size={14} />{activeTab.title}</span>}</div>
-      <div className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateActive({ view: event.target.value || searchTagIds.length ? "files" : activeTab.view, title: event.target.value ? "搜索" : activeTab.title, query: event.target.value })} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}<SearchTagFilter tags={data.tags} selectedIds={searchTagIds} disabled={activeTab.view === "settings"} onToggle={toggleSearchTag} onClear={() => setSearchTagIds([])} /></div>
+      <div className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateSearchQuery(event.target.value)} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}<SearchTagFilter tags={data.tags} selectedIds={searchTagIds} disabled={activeTab.view === "settings"} onToggle={toggleSearchTag} onClear={() => setSearchTagIds([])} /></div>
     </section>
     <section className="commandbar">
       <button className="primary" onClick={() => void chooseImport()}><Import size={16} />导入资料</button>
@@ -1083,8 +1144,8 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     await api.setDocumentTags(document!.id, ids.includes(tag.id) ? ids.filter((id) => id !== tag.id) : [...ids, tag.id]);
     await onChanged();
   }
-  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在生成预览…</span>}{preview?.kind === "image" && <div className="preview-media-transform" style={transformStyle}><img src={preview.path} alt={document.name} /></div>}{preview?.kind === "pdf" && <div className="preview-media-transform" style={transformStyle}><iframe src={preview.path} title={document.name} /></div>}{preview?.kind === "docx" && <DocxPreview path={preview.path} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
-  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canTransform} title="向左旋转" onClick={() => setRotation((value) => value - 90)}><RotateCcw size={15} /></button><button disabled={!canTransform} title="向右旋转" onClick={() => setRotation((value) => value + 90)}><RotateCw size={15} /></button><span /><button disabled={!canTransform || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canTransform} className="zoom-value" title="恢复原始视图" onClick={() => { setRotation(0); setZoom(1); }}>{Math.round(zoom * 100)}%</button><button disabled={!canTransform || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
+  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在读取预览…</span>}{preview?.kind === "loading" && <span className="preview-loading">{preview.message}</span>}{preview?.kind === "image" && <div className="preview-media-transform" style={transformStyle}><img src={preview.path} alt={document.name} /></div>}{preview?.kind === "pdf" && <div className="preview-media-transform" style={transformStyle}><iframe src={preview.path} title={document.name} /></div>}{preview?.kind === "docx" && <DocxPreview path={preview.path} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
+  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canTransform} title="向左旋转" onClick={() => setRotation((value) => value - 90)}><RotateCcw size={15} /></button><button disabled={!canTransform} title="向右旋转" onClick={() => setRotation((value) => value + 90)}><RotateCw size={15} /></button><span /><button disabled={!canTransform || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canTransform} className="zoom-value" title="恢复原始视图" onClick={() => { setRotation(0); setZoom(1); }}>{Math.round(zoom * 100)}%</button><button disabled={!canTransform || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
   const zoomCapture = controlPressed && canTransform ? <div className="preview-zoom-capture" title="Ctrl + 滚轮缩放预览" onWheel={handlePreviewWheel} /> : null;
   return <aside className="preview-pane custom-scrollbar"><header><FileIcon extension={document.extension} /><div><strong>{document.name}</strong><small>{formatSize(document.size)} · {document.extension.toUpperCase()}</small></div></header>
     <div className="preview-stage">{controls()}<div className="preview-box">{renderPreviewContent()}{zoomCapture}</div></div>

@@ -1,8 +1,8 @@
 [package]
 name = "document-ledger"
-version = "0.5.5"
+version = "0.5.6"
 description = "EazyLedger Windows 本地资料管理工具"
-authors = ["Document Ledger Contributors"]
+authors = ["LeMasta"]
 edition = "2021"
 
 [lib]

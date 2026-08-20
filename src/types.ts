@@ -55,15 +55,20 @@ export type BootstrapData = {
 };
 
 export type Preview =
-  | { kind: "image" | "pdf" | "docx"; path: string; text?: never; reason?: never }
-  | { kind: "text"; text: string; path?: never; reason?: never }
-  | { kind: "unsupported"; reason?: string; text?: never; path?: never };
+  | { kind: "image" | "pdf" | "docx"; path: string; text?: never; reason?: never; message?: never }
+  | { kind: "text"; text: string; path?: never; reason?: never; message?: never }
+  | { kind: "loading"; message: string; text?: never; path?: never; reason?: never }
+  | { kind: "unsupported"; reason?: string; text?: never; path?: never; message?: never };
 
-export type AppTab = {
-  id: string;
+export type AppTabHistoryEntry = {
   title: string;
   view: "home" | "files" | "settings";
   nodeId: string | null;
   tagId: string | null;
   query: string;
+};
+
+export type AppTab = AppTabHistoryEntry & {
+  id: string;
+  history: AppTabHistoryEntry[];
 };
