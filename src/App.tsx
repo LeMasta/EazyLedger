@@ -87,6 +87,7 @@ export default function App() {
   const lastSelectedIndex = useRef<number | null>(null);
   const pointerCandidateRef = useRef<PointerDragCandidate | null>(null);
   const pointerDragRef = useRef<PointerDragState | null>(null);
+  const nativeDraggedIdsRef = useRef<string[] | null>(null);
   const suppressPointerClickRef = useRef(false);
 
   useEffect(() => {
@@ -195,17 +196,34 @@ export default function App() {
 
   useEffect(() => {
     if (!api.isDesktop) return;
+    const nodes = data?.nodes ?? [];
     let unlisten: (() => void) | undefined;
     void getCurrentWindow().onDragDropEvent((event) => {
-      if (event.payload.type === "enter" || event.payload.type === "over") setExternalDragging(true);
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        setExternalDragging(!nativeDraggedIdsRef.current?.length);
+      }
       if (event.payload.type === "leave") setExternalDragging(false);
       if (event.payload.type === "drop") {
         setExternalDragging(false);
-        void importPaths(event.payload.paths, activeTab.nodeId ?? "root");
+        const payload = event.payload;
+        void (async () => {
+          const scaleFactor = await getCurrentWindow().scaleFactor();
+          const x = payload.position.x / scaleFactor;
+          const y = payload.position.y / scaleFactor;
+          const fileDrag: PointerDragState = { kind: "files", ids: [], label: "", x, y };
+          const targetNodeId = resolvePointerTarget(x, y, fileDrag, nodes)?.nodeId;
+          const internalIds = nativeDraggedIdsRef.current;
+          nativeDraggedIdsRef.current = null;
+          if (internalIds?.length) {
+            if (targetNodeId) await moveFiles(internalIds, targetNodeId);
+            return;
+          }
+          await importPaths(payload.paths, targetNodeId ?? activeTab.nodeId ?? "root");
+        })();
       }
     }).then((fn) => (unlisten = fn));
     return () => unlisten?.();
-  }, [activeTab.nodeId]);
+  }, [activeTab.nodeId, data?.nodes]);
 
   useEffect(() => {
     const nodes = data?.nodes ?? [];
@@ -223,22 +241,33 @@ export default function App() {
       let active = pointerDragRef.current;
       if (!active) {
         if (Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY) < 6) return;
-        active = candidate.kind === "files"
-          ? { kind: "files", ids: candidate.ids, label: candidate.label, x: event.clientX, y: event.clientY }
-          : { kind: "node", nodeId: candidate.nodeId, label: candidate.label, x: event.clientX, y: event.clientY };
+        if (candidate.kind === "files") {
+          const paths = candidate.nativePaths;
+          const dragIds = candidate.ids;
+          nativeDraggedIdsRef.current = dragIds;
+          clearPointerDrag();
+          suppressPointerClickRef.current = true;
+          window.setTimeout(() => { suppressPointerClickRef.current = false; }, 0);
+          event.preventDefault();
+          if (!paths) return;
+          void paths
+            .then((resolved) => api.startNativeFileDrag(resolved))
+            .catch((reason) => {
+              nativeDraggedIdsRef.current = null;
+              setError(`无法拖出文件：${String(reason)}`);
+            })
+            .finally(() => window.setTimeout(() => {
+              if (nativeDraggedIdsRef.current === dragIds) nativeDraggedIdsRef.current = null;
+            }, 1_200));
+          return;
+        }
+        active = { kind: "node", nodeId: candidate.nodeId, label: candidate.label, x: event.clientX, y: event.clientY };
         pointerDragRef.current = active;
         document.body.classList.add("internal-pointer-dragging");
       } else active = { ...active, x: event.clientX, y: event.clientY };
       event.preventDefault();
       setPointerDrag(active);
       setPointerDropTarget(resolvePointerTarget(event.clientX, event.clientY, active, nodes));
-    };
-    const handlePointerLeave = (event: PointerEvent) => {
-      const candidate = pointerCandidateRef.current;
-      if (!candidate || candidate.kind !== "files" || !(event.buttons & 1) || !candidate.nativePaths) return;
-      const paths = candidate.nativePaths;
-      clearPointerDrag();
-      void paths.then((resolved) => api.startNativeFileDrag(resolved)).catch((reason) => setError(`无法拖出文件：${String(reason)}`));
     };
     const handlePointerEnd = (event: PointerEvent) => {
       const candidate = pointerCandidateRef.current;
@@ -247,13 +276,10 @@ export default function App() {
       if (active) {
         event.preventDefault();
         const dropTarget = resolvePointerTarget(event.clientX, event.clientY, active, nodes);
-        if (dropTarget) {
-          if (active.kind === "files") void moveFiles(active.ids, dropTarget.nodeId);
-          else {
-            const source = nodes.find((node) => node.id === active.nodeId);
-            const target = nodes.find((node) => node.id === dropTarget.nodeId);
-            if (source && target) void moveNodeByDrop(source, target, dropTarget.position);
-          }
+        if (dropTarget && active.kind === "node") {
+          const source = nodes.find((node) => node.id === active.nodeId);
+          const target = nodes.find((node) => node.id === dropTarget.nodeId);
+          if (source && target) void moveNodeByDrop(source, target, dropTarget.position);
         }
         suppressPointerClickRef.current = true;
         window.setTimeout(() => { suppressPointerClickRef.current = false; }, 0);
@@ -263,12 +289,10 @@ export default function App() {
     window.addEventListener("pointermove", handlePointerMove, { passive: false });
     window.addEventListener("pointerup", handlePointerEnd, { passive: false });
     window.addEventListener("pointercancel", handlePointerEnd, { passive: false });
-    document.documentElement.addEventListener("pointerleave", handlePointerLeave);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerEnd);
       window.removeEventListener("pointercancel", handlePointerEnd);
-      document.documentElement.removeEventListener("pointerleave", handlePointerLeave);
       document.body.classList.remove("internal-pointer-dragging");
     };
   }, [data?.nodes]);
