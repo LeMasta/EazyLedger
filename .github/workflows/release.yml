@@ -35,6 +35,8 @@ jobs:
       - name: 读取版本并创建标签
         id: version
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
@@ -47,19 +49,36 @@ jobs:
 
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
           CURRENT_COMMIT="$(git rev-parse HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             TAG_COMMIT="$(git rev-list -n 1 "v$VERSION")"
-            if [ "$TAG_COMMIT" != "$CURRENT_COMMIT" ]; then
-              echo "::error::标签 v$VERSION 已存在，但不指向当前 main；请先提升版本号"
+            if [ "$TAG_COMMIT" = "$CURRENT_COMMIT" ]; then
+              echo "::notice::标签 v$VERSION 已指向当前 main，将继续发版"
+              exit 0
+            fi
+
+            RELEASE_STATUS="$(curl --retry 2 --silent --show-error --output /dev/null --write-out "%{http_code}" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION")"
+
+            if [ "$RELEASE_STATUS" = "200" ]; then
+              echo "::error::v$VERSION 已有正式 Release，拒绝移动已发布标签；请提升版本号"
               exit 1
             fi
-            echo "::notice::标签 v$VERSION 已指向当前 main，将继续发版"
-            exit 0
+            if [ "$RELEASE_STATUS" != "404" ]; then
+              echo "::error::无法确认 v$VERSION 是否已有 Release（GitHub API HTTP $RELEASE_STATUS），为保护已发布版本已停止"
+              exit 1
+            fi
+
+            echo "::warning::检测到上次中断留下的孤立标签 v$VERSION，将在当前 main 重建"
+            git push origin --delete "v$VERSION"
+            git tag -d "v$VERSION"
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "EazyLedger v$VERSION"
           git push origin "v$VERSION"
 
