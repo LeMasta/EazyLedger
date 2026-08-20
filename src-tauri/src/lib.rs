@@ -15,7 +15,7 @@ use std::{
     thread,
     time::UNIX_EPOCH,
 };
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -196,7 +196,7 @@ pub fn run() {
             app.asset_protocol_scope()
                 .allow_directory(&vault_path, true)
                 .map_err(std::io::Error::other)?;
-            let watcher = start_watcher(vault_path.clone()).map_err(std::io::Error::other)?;
+            let watcher = start_watcher(vault_path.clone(), app.handle().clone()).map_err(std::io::Error::other)?;
             app.manage(AppState {
                 vault_path,
                 config_path,
@@ -1517,14 +1517,18 @@ fn extract_docx(path: &Path) -> Result<String, String> {
     Ok(text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'"))
 }
 
-fn start_watcher(vault: PathBuf) -> Result<RecommendedWatcher, String> {
+fn start_watcher(vault: PathBuf, app: tauri::AppHandle) -> Result<RecommendedWatcher, String> {
     let watched_vault = vault.clone();
     let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
         if let Ok(event) = result {
+            let has_changes = !event.paths.is_empty();
             for path in event.paths {
                 if path.is_file() {
                     let _ = refresh_changed_file(&watched_vault, &path);
                 }
+            }
+            if has_changes {
+                let _ = app.emit("vault-changed", ());
             }
         }
     }).map_err(|error| error.to_string())?;
