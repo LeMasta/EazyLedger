@@ -2,7 +2,7 @@
 use clipboard_win::{formats, Clipboard, Format, Getter, Setter};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -679,9 +679,13 @@ fn reveal_vault(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
     let connection = open_db(&state.vault_path)?;
-    let (extension, relative_path, text): (String, String, String) = connection
+    let record: Option<(String, String, String)> = connection
         .query_row("SELECT extension, relative_path, content_text FROM documents WHERE id=?1", [&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .map_err(|error| error.to_string())?;
+        .optional()
+        .map_err(|error| format!("无法读取预览资料：{error}"))?;
+    let Some((extension, relative_path, text)) = record else {
+        return Ok(Preview::Unsupported { reason: "资料记录已发生变化，请刷新列表后重试。".into() });
+    };
     let path = state.vault_path.join(relative_path).to_string_lossy().to_string();
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Ok(Preview::Image { path }),
@@ -689,7 +693,7 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
         "docx" => Ok(Preview::Docx { path }),
         "doc" => get_legacy_doc_preview(&id, Path::new(&path), state.inner()),
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
-        _ => Ok(Preview::Unsupported { reason: "该格式尚未接入内置预览器".into() }),
+        _ => Ok(Preview::Unsupported { reason: format!("{} 格式暂不支持内置预览，请使用默认程序打开。", extension.to_uppercase()) }),
     }
 }
 
