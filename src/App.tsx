@@ -88,6 +88,8 @@ export default function App() {
   const pointerCandidateRef = useRef<PointerDragCandidate | null>(null);
   const pointerDragRef = useRef<PointerDragState | null>(null);
   const nativeDraggedIdsRef = useRef<string[] | null>(null);
+  const importInFlightRef = useRef(false);
+  const recentExternalImportRef = useRef<{ key: string; at: number } | null>(null);
   const suppressPointerClickRef = useRef(false);
 
   useEffect(() => {
@@ -386,7 +388,10 @@ export default function App() {
       if (event.ctrlKey && event.key.toLowerCase() === "a") { event.preventDefault(); setSelectedIds(new Set(documents.map((item) => item.id))); }
       if (event.ctrlKey && event.key.toLowerCase() === "c" && selectedIds.size) { event.preventDefault(); void copyFilesToClipboard([...selectedIds]); }
       if (event.ctrlKey && event.key.toLowerCase() === "x" && selectedIds.size) { event.preventDefault(); setClipboard({ mode: "cut", ids: [...selectedIds] }); }
-      if (event.ctrlKey && event.key.toLowerCase() === "v") { event.preventDefault(); void pasteAvailableClipboard(); }
+      if (event.ctrlKey && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        if (!event.repeat) void pasteAvailableClipboard();
+      }
       if (event.key === "F2" && selectedIds.size === 1) { event.preventDefault(); void renameSelected(); }
       if (event.key === "Delete" && selectedIds.size) { event.preventDefault(); void deleteSelected(); }
       if (event.key === "Escape") { setSelectedIds(new Set()); setContextMenu(null); setDialog(null); }
@@ -459,15 +464,39 @@ export default function App() {
   }
 
   async function importPaths(paths: string[], nodeId: string) {
-    await runAction(async () => { await api.importPaths(paths, nodeId); await refreshAll(); await api.warmDocPreviews(); });
+    const normalizedPaths = [...new Map(paths.map((path) => [path.replaceAll("\\", "/").toLocaleLowerCase(), path])).values()];
+    if (!normalizedPaths.length) return;
+    const key = `${nodeId}\n${normalizedPaths.map((path) => path.replaceAll("\\", "/").toLocaleLowerCase()).sort().join("\n")}`;
+    const now = Date.now();
+    const recent = recentExternalImportRef.current;
+    if (importInFlightRef.current || (recent?.key === key && now - recent.at < 1_500)) return;
+    recentExternalImportRef.current = { key, at: now };
+    importInFlightRef.current = true;
+    try {
+      await runAction(async () => { await api.importPaths(normalizedPaths, nodeId); await refreshAll(); await api.warmDocPreviews(); });
+    } finally {
+      importInFlightRef.current = false;
+    }
   }
 
   async function chooseImport() {
-    await runAction(async () => { await api.chooseAndImport(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
+    if (importInFlightRef.current) return;
+    importInFlightRef.current = true;
+    try {
+      await runAction(async () => { await api.chooseAndImport(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
+    } finally {
+      importInFlightRef.current = false;
+    }
   }
 
   async function chooseImportFolder() {
-    await runAction(async () => { await api.chooseAndImportFolder(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
+    if (importInFlightRef.current) return;
+    importInFlightRef.current = true;
+    try {
+      await runAction(async () => { await api.chooseAndImportFolder(activeTab.nodeId ?? "root"); await refreshAll(); await api.warmDocPreviews(); });
+    } finally {
+      importInFlightRef.current = false;
+    }
   }
 
   function addNode(parentId = activeTab.nodeId ?? "root") {
@@ -574,24 +603,29 @@ export default function App() {
   }
 
   async function pasteAvailableClipboard() {
-    if (activeTab.view === "settings") return;
-    const target = activeTab.nodeId ?? ROOT_FALLBACK(data);
-    let imported = 0;
-    await runAction(async () => {
-      imported = await api.importClipboardFiles(target);
-      if (imported) {
-        setClipboard(null);
-        await refreshAll();
-        await api.warmDocPreviews();
+    if (activeTab.view === "settings" || importInFlightRef.current) return;
+    importInFlightRef.current = true;
+    try {
+      const target = activeTab.nodeId ?? ROOT_FALLBACK(data);
+      let imported = 0;
+      await runAction(async () => {
+        imported = await api.importClipboardFiles(target);
+        if (imported) {
+          setClipboard(null);
+          await refreshAll();
+          await api.warmDocPreviews();
+        }
+      });
+      if (imported) return;
+      if (clipboard) {
+        if (clipboard.mode === "copy") await copyFiles(clipboard.ids, target);
+        else { await moveFiles(clipboard.ids, target); setClipboard(null); }
+        return;
       }
-    });
-    if (imported) return;
-    if (clipboard) {
-      if (clipboard.mode === "copy") await copyFiles(clipboard.ids, target);
-      else { await moveFiles(clipboard.ids, target); setClipboard(null); }
-      return;
+      setError("剪贴板中没有可导入的文件或文件夹");
+    } finally {
+      importInFlightRef.current = false;
     }
-    setError("剪贴板中没有可导入的文件或文件夹");
   }
 
   async function openTrashCenter() {
@@ -606,6 +640,17 @@ export default function App() {
       await api.restoreTrashItem(trashId);
       setTrashItems(await api.listTrash());
       await refreshAll();
+    });
+  }
+
+  function requestDeleteTrashItem(item: TrashItem) {
+    setDialog({
+      kind: "confirm", tone: "danger", title: "永久删除这个文件？", description: `“${item.name}”将从应用回收站永久删除，无法恢复。`, confirmLabel: "永久删除",
+      onConfirm: () => void runAction(async () => {
+        await api.deleteTrashItem(item.trashId);
+        setTrashItems(await api.listTrash());
+        await refreshBootstrap();
+      }),
     });
   }
 
@@ -943,7 +988,7 @@ export default function App() {
     {pointerDrag && <div className={`pointer-drag-ghost ${pointerDropTarget ? "can-drop" : ""}`} style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
       {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerDropTarget ? pointerDrag.kind === "files" ? "松开即可移动文件" : pointerDropTarget.position === "inside" ? "松开设为子节点" : pointerDropTarget.position === "before" ? "松开插到节点前" : "松开插到节点后" : "拖到左侧台账节点"}</small></span>
     </div>}
-    {trashOpen && <TrashCenter items={trashItems} path={data.settings.trashPath} onClose={() => setTrashOpen(false)} onReveal={() => void runAction(() => api.revealTrash())} onRestore={(trashId) => void restoreTrashItem(trashId)} onEmpty={requestEmptyTrash} />}
+    {trashOpen && <TrashCenter items={trashItems} path={data.settings.trashPath} onClose={() => setTrashOpen(false)} onReveal={() => void runAction(() => api.revealTrash())} onRestore={(trashId) => void restoreTrashItem(trashId)} onDelete={requestDeleteTrashItem} onEmpty={requestEmptyTrash} />}
     {notificationCenterOpen && <><button className="notification-scrim" aria-label="关闭通知中心" onClick={() => setNotificationCenterOpen(false)} /><aside className="notification-center">
       <header><div><Bell size={20} /><span><strong>通知中心</strong><small>有效期告警与历史通知</small></span></div><button title="关闭" onClick={() => setNotificationCenterOpen(false)}><X size={17} /></button></header>
       <section className="notification-summary"><span><AlertTriangle size={16} />当前需关注 <strong>{expiryAlerts.length}</strong> 份</span><div className="notification-summary-actions">{unreadNotificationCount > 0 && <button onClick={markAllNotificationsRead}><Check size={14} />全部已读</button>}{notifications.length > 0 && <button className="clear" onClick={requestClearNotifications}><Trash2 size={14} />清空记录</button>}</div></section>
@@ -1119,15 +1164,15 @@ function HomeTreeNode({ node, nodes, onOpen, expandedIds, onToggle }: { node: No
   </div>;
 }
 
-function TrashCenter({ items, path, onClose, onReveal, onRestore, onEmpty }: { items: TrashItem[]; path: string; onClose: () => void; onReveal: () => void; onRestore: (trashId: string) => void; onEmpty: () => void }) {
+function TrashCenter({ items, path, onClose, onReveal, onRestore, onDelete, onEmpty }: { items: TrashItem[]; path: string; onClose: () => void; onReveal: () => void; onRestore: (trashId: string) => void; onDelete: (item: TrashItem) => void; onEmpty: () => void }) {
   return <><button className="trash-scrim" aria-label="关闭回收站" onClick={onClose} /><aside className="trash-center">
-    <header><div><Trash2 size={20} /><span><strong>应用回收站</strong><small>{items.length} 个可恢复文件</small></span></div><button title="关闭" onClick={onClose}><X size={17} /></button></header>
+    <header><div><Trash2 size={20} /><span><strong>应用回收站</strong><small>{items.length} 个可恢复文件</small></span></div><div className="trash-header-actions"><button className="trash-clear-button" title="永久删除回收站中的全部文件" disabled={!items.length} onClick={onEmpty}><Trash2 size={14} />一键清空</button><button title="关闭" onClick={onClose}><X size={17} /></button></div></header>
     <section className="trash-location"><code title={path}>{path}</code><button title="打开回收站文件夹" onClick={onReveal}><FolderOpen size={15} /></button></section>
     <div className="trash-list custom-scrollbar">{items.length ? items.map((item) => <article className="trash-row" key={item.trashId}>
       <FileIcon extension={item.extension} /><span><strong title={item.name}>{item.name}</strong><small>{item.originalNodeName ? `原位置：${item.originalNodeName} · ` : ""}{formatDate(item.deletedAt, true)} · {formatSize(item.size)}</small></span>
-      <button title="恢复到原节点" onClick={() => onRestore(item.trashId)}><RotateCcw size={15} />恢复</button>
+      <div className="trash-row-actions"><button title="恢复到原节点" onClick={() => onRestore(item.trashId)}><RotateCcw size={15} />恢复</button><button className="danger" title="永久删除" onClick={() => onDelete(item)}><Trash2 size={15} />删除</button></div>
     </article>) : <div className="trash-empty"><Trash2 size={32} /><strong>回收站是空的</strong><span>选择“应用回收站”删除方式后，可在这里恢复文件</span></div>}</div>
-    <footer><span>应用回收站中的文件不会自动清理</span><button className="danger" disabled={!items.length} onClick={onEmpty}><Trash2 size={14} />清空回收站</button></footer>
+    <footer><span>应用回收站中的文件不会自动清理</span><span>永久删除后无法恢复</span></footer>
   </aside></>;
 }
 
