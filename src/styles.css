@@ -170,7 +170,7 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .preview-pane > header strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
 .preview-pane > header small { color: var(--muted); font-size: 11px; }
 .preview-empty { display: grid; place-content: center; justify-items: center; color: #9ba4af; font-size: 12px; }
-.preview-box { height: 300px; margin: 12px; border: 1px solid var(--border); border-radius: 7px; background: white; overflow: hidden; display: grid; place-items: center; }
+.preview-box { position: relative; height: 300px; margin: 12px; border: 1px solid var(--border); border-radius: 7px; background: white; overflow: hidden; display: grid; place-items: center; }
 .preview-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .preview-box iframe { width: 100%; height: 100%; border: 0; }
 .preview-box pre { width: 100%; height: 100%; margin: 0; padding: 16px; overflow: auto; font: 12px/1.7 "Microsoft YaHei UI", sans-serif; white-space: pre-wrap; color: #353c46; }
@@ -396,8 +396,8 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 .preview-toolbar button:disabled { opacity: .35; }
 .preview-toolbar .zoom-value { width: 42px; font-size: 9px; }
 .preview-toolbar button:last-child { margin-left: auto; }
-.preview-media-transform { width: 100%; height: 100%; display: grid; place-items: center; transform-origin: center; transition: transform .18s ease; }
-.preview-media-transform img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.preview-media-transform { width: 100%; height: 100%; display: grid; place-items: center; transform-origin: center; transition: transform .18s ease; will-change: transform; }
+.preview-media-transform img { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .preview-media-transform iframe { width: 100%; height: 100%; border: 0; background: white; }
 .preview-fullscreen { position: fixed; inset: 0; z-index: 150; padding: 24px; background: #111827e8; backdrop-filter: blur(5px); }
 .preview-fullscreen > div { width: 100%; height: 100%; display: grid; grid-template-rows: 52px minmax(0, 1fr); overflow: hidden; border-radius: 12px; background: #f4f6f9; box-shadow: 0 24px 80px #0007; }
@@ -558,7 +558,7 @@ button, input, textarea, select { font: inherit; }
 .unsupported span { color: #7d8998; line-height: 1.55; }
 .docx-preview { width: 100%; height: 100%; overflow: auto; background: #dfe3e8; }
 .docx-preview > .preview-loading { min-height: 100%; display: grid; place-items: center; }
-.docx-preview > div { min-width: min-content; padding: 18px; }
+.docx-preview > div { min-width: min-content; padding: 18px; zoom: var(--docx-zoom, 1); transform-origin: top center; }
 .docx-preview .docx-wrapper { padding: 16px !important; background: #dfe3e8 !important; }
 .docx-preview .docx-wrapper > section.docx { margin: 0 auto 16px !important; box-shadow: 0 3px 14px #1720332d !important; }
 .preview-box:has(.docx-preview) { display: block; }
@@ -632,7 +632,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .preview-pane { border-left-color: #d3dae3; background: #f1f3f6; }
 .preview-pane > header { min-height: 62px; border-bottom-color: #d8dee6; background: rgba(255,255,255,.84); }
 .preview-box { position: relative; margin: 14px; border-color: #d3d9e1; border-radius: 10px; box-shadow: var(--shadow-card); }
-.preview-zoom-capture { position: absolute; z-index: 5; inset: 0; cursor: zoom-in; background: transparent; }
+.preview-pan-capture { position: absolute; z-index: 5; inset: 0; background: transparent; touch-action: none; }
+.preview-pan-capture:not(.can-pan) { cursor: zoom-in; }
+.preview-pan-capture.can-pan { cursor: grab; }
+.preview-pan-capture.panning { cursor: grabbing; }
 .preview-toolbar { border-color: #d6dce4; border-radius: 9px; box-shadow: var(--shadow-card); }
 .properties { margin: 0 12px 14px; padding: 1px 12px 13px; border: 1px solid #dce1e7; border-radius: 10px; background: white; box-shadow: var(--shadow-card); }
 .properties textarea { border-radius: 7px; background: #fbfcfd; }
