@@ -135,7 +135,7 @@ export default function App() {
     const startedAt = performance.now();
     setUpdateUi({ phase: "checking", message: "正在连接 GitHub 更新服务…" });
     const slowTimer = window.setTimeout(() => setUpdateUi((current) => current.phase === "checking"
-      ? { ...current, message: "GitHub 仍在响应，检查会在 12 秒内结束…" }
+      ? { ...current, message: "主更新地址响应较慢，正在尝试备用地址…" }
       : current), 1_500);
     try {
       const info = await findUpdate();
