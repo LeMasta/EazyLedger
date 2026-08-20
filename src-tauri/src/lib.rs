@@ -11,7 +11,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{Arc, Mutex},
+    thread,
     time::UNIX_EPOCH,
 };
 use tauri::{Manager, State};
@@ -44,6 +45,14 @@ fn is_ignored_system_entry(path: &Path) -> bool {
 struct AppState {
     vault_path: PathBuf,
     config_path: PathBuf,
+    preview_jobs: Arc<Mutex<HashMap<String, PreviewJobState>>>,
+    preview_conversion_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+enum PreviewJobState {
+    Running,
+    Failed(String),
 }
 
 struct WatcherState(Mutex<Option<RecommendedWatcher>>);
@@ -158,6 +167,7 @@ enum Preview {
     Pdf { path: String },
     Text { text: String },
     Docx { path: String },
+    Loading { message: String },
     Unsupported { reason: String },
 }
 
@@ -187,7 +197,12 @@ pub fn run() {
                 .allow_directory(&vault_path, true)
                 .map_err(std::io::Error::other)?;
             let watcher = start_watcher(vault_path.clone()).map_err(std::io::Error::other)?;
-            app.manage(AppState { vault_path, config_path });
+            app.manage(AppState {
+                vault_path,
+                config_path,
+                preview_jobs: Arc::new(Mutex::new(HashMap::new())),
+                preview_conversion_lock: Arc::new(Mutex::new(())),
+            });
             let watcher_state = app.state::<WatcherState>();
             *watcher_state.0.lock().map_err(|_| std::io::Error::other("监视器锁异常"))? = Some(watcher);
             Ok(())
@@ -203,6 +218,7 @@ pub fn run() {
             reveal_document,
             reveal_vault,
             get_preview,
+            warm_doc_previews,
             create_node,
             rename_node,
             move_node,
@@ -671,13 +687,114 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Ok(Preview::Image { path }),
         "pdf" => Ok(Preview::Pdf { path }),
         "docx" => Ok(Preview::Docx { path }),
-        "doc" => match convert_legacy_doc_preview(&id, Path::new(&path), &state.vault_path) {
-            Ok(preview_path) => Ok(Preview::Pdf { path: preview_path.to_string_lossy().to_string() }),
-            Err(reason) => Ok(Preview::Unsupported { reason }),
-        },
+        "doc" => get_legacy_doc_preview(&id, Path::new(&path), &state),
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
         _ => Ok(Preview::Unsupported { reason: "该格式尚未接入内置预览器".into() }),
     }
+}
+
+#[tauri::command]
+fn warm_doc_previews(state: State<AppState>) -> Result<usize, String> {
+    let connection = open_db(&state.vault_path)?;
+    let mut statement = connection
+        .prepare("SELECT id, relative_path FROM documents WHERE extension='doc' ORDER BY modified_at DESC LIMIT 32")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|error| error.to_string())?;
+
+    let mut queued = 0;
+    for row in rows {
+        let (id, relative_path) = row.map_err(|error| error.to_string())?;
+        let source = state.vault_path.join(relative_path);
+        if queue_legacy_doc_preview(
+            id,
+            source,
+            state.vault_path.clone(),
+            Arc::clone(&state.preview_jobs),
+            Arc::clone(&state.preview_conversion_lock),
+        )? {
+            queued += 1;
+        }
+    }
+    Ok(queued)
+}
+
+fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<Preview, String> {
+    let cached_pdf = legacy_doc_cache_path(id, &state.vault_path);
+    if preview_is_fresh(source, &cached_pdf) {
+        return Ok(Preview::Pdf { path: cached_pdf.to_string_lossy().to_string() });
+    }
+
+    let existing = state
+        .preview_jobs
+        .lock()
+        .map_err(|_| "DOC 预览任务状态异常".to_string())?
+        .get(id)
+        .cloned();
+
+    match existing {
+        Some(PreviewJobState::Running) => {
+            return Ok(Preview::Loading { message: "正在后台生成 DOC 预览…".into() });
+        }
+        Some(PreviewJobState::Failed(reason)) => {
+            return Ok(Preview::Unsupported { reason });
+        }
+        None => {}
+    }
+
+    queue_legacy_doc_preview(
+        id.to_string(),
+        source.to_path_buf(),
+        state.vault_path.clone(),
+        Arc::clone(&state.preview_jobs),
+        Arc::clone(&state.preview_conversion_lock),
+    )?;
+    Ok(Preview::Loading { message: "正在后台生成 DOC 预览…".into() })
+}
+
+fn queue_legacy_doc_preview(
+    id: String,
+    source: PathBuf,
+    vault: PathBuf,
+    jobs: Arc<Mutex<HashMap<String, PreviewJobState>>>,
+    conversion_lock: Arc<Mutex<()>>,
+) -> Result<bool, String> {
+    let cached_pdf = legacy_doc_cache_path(&id, &vault);
+    if preview_is_fresh(&source, &cached_pdf) {
+        return Ok(false);
+    }
+
+    {
+        let mut states = jobs.lock().map_err(|_| "DOC 预览任务状态异常".to_string())?;
+        if states.contains_key(&id) {
+            return Ok(false);
+        }
+        states.insert(id.clone(), PreviewJobState::Running);
+    }
+
+    thread::spawn(move || {
+        let result = conversion_lock
+            .lock()
+            .map_err(|_| "DOC 预览转换队列异常".to_string())
+            .and_then(|_guard| convert_legacy_doc_preview(&id, &source, &vault));
+
+        if let Ok(mut states) = jobs.lock() {
+            match result {
+                Ok(_) => {
+                    states.remove(&id);
+                }
+                Err(reason) => {
+                    states.insert(id, PreviewJobState::Failed(reason));
+                }
+            }
+        }
+    });
+    Ok(true)
+}
+
+fn legacy_doc_cache_path(id: &str, vault: &Path) -> PathBuf {
+    vault.join("preview-cache").join(id).join("preview.pdf")
 }
 
 fn convert_legacy_doc_preview(id: &str, source: &Path, vault: &Path) -> Result<PathBuf, String> {
@@ -698,7 +815,7 @@ fn convert_legacy_doc_preview(id: &str, source: &Path, vault: &Path) -> Result<P
     for executable in candidates {
         if executable.is_absolute() && !executable.exists() { continue; }
         let status = Command::new(&executable)
-            .args(["--headless", "--convert-to", "pdf", "--outdir"])
+            .args(["--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--convert-to", "pdf", "--outdir"])
             .arg(&cache_dir)
             .arg(source)
             .status();
