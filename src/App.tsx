@@ -204,6 +204,22 @@ export default function App() {
 
   useEffect(() => {
     if (!api.isDesktop) return;
+    let unlisten: (() => void) | undefined;
+    let refreshTimer: number | undefined;
+    void getCurrentWindow().listen("vault-changed", () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void refreshAll().catch((reason) => setError(`资料库自动刷新失败：${String(reason)}`));
+      }, 300);
+    }).then((fn) => (unlisten = fn));
+    return () => {
+      unlisten?.();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (!api.isDesktop) return;
     const nodes = data?.nodes ?? [];
     let unlisten: (() => void) | undefined;
     void getCurrentWindow().onDragDropEvent((event) => {
@@ -675,13 +691,28 @@ export default function App() {
 
   function deleteNode(node: NodeItem) {
     if (node.id === "root" || !data) return;
+    const removedNodeIds = new Set([node.id, ...descendantNodeIds(node.id, data.nodes)]);
     const copy = deletionCopy(data.settings.deleteMode, 1, "节点及其中资料");
     setDialog({
       kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: copy.description, confirmLabel: copy.confirmLabel,
       onConfirm: () => void runAction(async () => {
-        await api.deleteNode(node.id);
-        if (activeTab.nodeId === node.id) goHome();
-        await refreshAll();
+        try {
+          await api.deleteNode(node.id);
+        } finally {
+          setSelectedIds(new Set());
+          setPreview(null);
+          try {
+            if (activeTab.nodeId && removedNodeIds.has(activeTab.nodeId)) {
+              goHome();
+              setDocuments([]);
+              await refreshBootstrap();
+            } else {
+              await refreshAll();
+            }
+          } catch (refreshReason) {
+            console.info("EazyLedger node deletion refresh failed", refreshReason);
+          }
+        }
       }),
     });
   }
