@@ -102,10 +102,6 @@ export default function App() {
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
   const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
-  const visibleChildNodes = useMemo(() => {
-    if (!data || activeTab.view !== "files" || !activeTab.nodeId || activeTab.tagId || activeTab.query || searchTagIds.length) return [];
-    return data.nodes.filter((node) => node.parentId === activeTab.nodeId).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-CN"));
-  }, [activeTab.nodeId, activeTab.query, activeTab.tagId, activeTab.view, data, searchTagIds.length]);
   const expiryAlerts = useMemo(() => (data?.documents ?? [])
     .map((document) => ({ document, expiry: expiryState(document.expiresAt) }))
     .filter((item): item is { document: DocumentItem; expiry: ExpiryState } => Boolean(item.expiry && item.expiry.days <= 30))
@@ -357,19 +353,24 @@ export default function App() {
 
   useEffect(() => {
     if (!data) return;
+    const activeDocumentIds = new Set(data.documents.map((document) => document.id));
+    const dismissedIds = readDismissedNotificationIds();
     setNotifications((current) => {
-      const known = new Set(current.map((item) => item.id));
+      const retained = current.filter((item) => activeDocumentIds.has(item.documentId));
+      const known = new Set(retained.map((item) => item.id));
       const additions = expiryAlerts.flatMap(({ document, expiry }) => {
         const tone: LedgerNotification["tone"] = expiry.kind === "expired" ? "expired" : expiry.kind === "today" ? "today" : "due-soon";
         const id = `${document.id}:${document.expiresAt}:${tone}`;
-        if (known.has(id)) return [];
+        if (known.has(id) || dismissedIds.has(id)) return [];
         return [{ id, documentId: document.id, title: document.name, message: expiry.label, tone, createdAt: Date.now(), read: false } satisfies LedgerNotification];
       });
-      if (!additions.length) return current;
-      const next = [...additions, ...current].slice(0, 200);
+      const next = [...additions, ...retained].slice(0, 200);
+      if (next.length === current.length && next.every((item, index) => item === current[index])) return current;
       writeNotifications(next);
       return next;
     });
+    const activeDismissedIds = new Set([...dismissedIds].filter((id) => activeDocumentIds.has(id.split(":", 1)[0])));
+    if (activeDismissedIds.size !== dismissedIds.size) writeDismissedNotificationIds(activeDismissedIds);
   }, [data, expiryAlerts]);
 
   useEffect(() => {
@@ -810,6 +811,35 @@ export default function App() {
     });
   }
 
+  function deleteNotification(notificationId: string) {
+    const dismissedIds = readDismissedNotificationIds();
+    dismissedIds.add(notificationId);
+    writeDismissedNotificationIds(dismissedIds);
+    setNotifications((current) => {
+      const next = current.filter((item) => item.id !== notificationId);
+      writeNotifications(next);
+      return next;
+    });
+  }
+
+  function requestClearNotifications() {
+    if (!notifications.length) return;
+    setDialog({
+      kind: "confirm",
+      tone: "danger",
+      title: "清空通知记录？",
+      description: `将删除当前保存的 ${notifications.length} 条通知记录。仍处于相同有效期状态的通知不会立刻重新出现；有效期发生变化后会生成新的提醒。`,
+      confirmLabel: "清空记录",
+      onConfirm: () => {
+        const dismissedIds = readDismissedNotificationIds();
+        notifications.forEach((item) => dismissedIds.add(item.id));
+        writeDismissedNotificationIds(dismissedIds);
+        writeNotifications([]);
+        setNotifications([]);
+      },
+    });
+  }
+
   function openNotification(item: LedgerNotification) {
     setNotifications((current) => {
       const next = current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry);
@@ -881,22 +911,6 @@ export default function App() {
           <span className="sort-heading"><button onClick={() => setSort("name")}>文件 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button><span className="star-column" title="星标文件始终置顶"><Star size={13} /></span>
         </div>
         <div className="file-list custom-scrollbar">
-          {visibleChildNodes.map((node) => <div
-            className="file-row folder-row"
-            key={`node:${node.id}`}
-            role="button"
-            tabIndex={0}
-            aria-label={`进入文件夹 ${node.name}`}
-            onClick={() => setSelectedIds(new Set())}
-            onDoubleClick={() => selectNode(node)}
-            onKeyDown={(event) => { if (event.key === "Enter") selectNode(node); }}
-          >
-            <span className="folder-row-spacer" aria-hidden="true" />
-            <span className="file-name"><span className="file-icon-wrap"><Folder className="folder-list-icon" size={30} /></span><span><span className="file-title-line"><strong title={node.name}>{node.name}</strong></span><small className="file-subtitle"><span className="file-kind">文件夹</span><span>{node.documentCount} 项资料</span></small></span></span>
-            <span>—</span>
-            <span>—</span>
-            <ChevronRight className="folder-row-enter" size={17} aria-hidden="true" />
-          </div>)}
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
             const visibleTags = document.tags.slice(0, data.settings.tagDisplayLimit);
@@ -914,9 +928,9 @@ export default function App() {
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
-          {!documents.length && !visibleChildNodes.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
+          {!documents.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
-        <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
+        <footer className="statusbar"><span>{documents.length} 个项目</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
@@ -930,7 +944,15 @@ export default function App() {
       {pointerDrag.kind === "files" ? <Files size={17} /> : <FolderInput size={17} />}<span><strong>{pointerDrag.label}</strong><small>{pointerDropTarget ? pointerDrag.kind === "files" ? "松开即可移动文件" : pointerDropTarget.position === "inside" ? "松开设为子节点" : pointerDropTarget.position === "before" ? "松开插到节点前" : "松开插到节点后" : "拖到左侧台账节点"}</small></span>
     </div>}
     {trashOpen && <TrashCenter items={trashItems} path={data.settings.trashPath} onClose={() => setTrashOpen(false)} onReveal={() => void runAction(() => api.revealTrash())} onRestore={(trashId) => void restoreTrashItem(trashId)} onEmpty={requestEmptyTrash} />}
-    {notificationCenterOpen && <><button className="notification-scrim" aria-label="关闭通知中心" onClick={() => setNotificationCenterOpen(false)} /><aside className="notification-center"><header><div><Bell size={20} /><span><strong>通知中心</strong><small>有效期告警与历史通知</small></span></div><button title="关闭" onClick={() => setNotificationCenterOpen(false)}><X size={17} /></button></header><section className="notification-summary"><span><AlertTriangle size={16} />当前需关注 <strong>{expiryAlerts.length}</strong> 份</span>{unreadNotificationCount > 0 && <button onClick={markAllNotificationsRead}><Check size={14} />全部已读</button>}</section><div className="notification-history custom-scrollbar">{notifications.length ? notifications.map((item) => <button className={`${item.read ? "read" : "unread"} ${item.tone}`} key={item.id} onClick={() => openNotification(item)}><span className="notification-status" /><span><strong>{item.title}</strong><small>{item.message} · {formatDate(item.createdAt, true)}</small></span>{!item.read && <i>新</i>}</button>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div><footer>最多保留最近 200 条记录</footer></aside></>}
+    {notificationCenterOpen && <><button className="notification-scrim" aria-label="关闭通知中心" onClick={() => setNotificationCenterOpen(false)} /><aside className="notification-center">
+      <header><div><Bell size={20} /><span><strong>通知中心</strong><small>有效期告警与历史通知</small></span></div><button title="关闭" onClick={() => setNotificationCenterOpen(false)}><X size={17} /></button></header>
+      <section className="notification-summary"><span><AlertTriangle size={16} />当前需关注 <strong>{expiryAlerts.length}</strong> 份</span><div className="notification-summary-actions">{unreadNotificationCount > 0 && <button onClick={markAllNotificationsRead}><Check size={14} />全部已读</button>}{notifications.length > 0 && <button className="clear" onClick={requestClearNotifications}><Trash2 size={14} />清空记录</button>}</div></section>
+      <div className="notification-history custom-scrollbar">{notifications.length ? notifications.map((item) => <div className={`notification-row ${item.read ? "read" : "unread"} ${item.tone}`} key={item.id}>
+        <button className="notification-open" onClick={() => openNotification(item)}><span className="notification-status" /><span><strong>{item.title}</strong><small>{item.message} · {formatDate(item.createdAt, true)}</small></span>{!item.read && <i>新</i>}</button>
+        <button className="notification-delete" title="删除这条通知" aria-label={`删除 ${item.title} 的通知`} onClick={() => deleteNotification(item.id)}><X size={14} /></button>
+      </div>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div>
+      <footer>最多保留最近 200 条记录 · 已删除资料的通知会自动清理</footer>
+    </aside></>}
     {loading && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
   </main>;
@@ -1378,6 +1400,15 @@ function readNotifications(): LedgerNotification[] {
   } catch { return []; }
 }
 function writeNotifications(items: LedgerNotification[]) { localStorage.setItem("document-ledger.notifications", JSON.stringify(items.slice(0, 200))); }
+function readDismissedNotificationIds() {
+  try {
+    const value = JSON.parse(localStorage.getItem("document-ledger.dismissed-notifications") ?? "[]");
+    return new Set<string>(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string").slice(-1000) : []);
+  } catch { return new Set<string>(); }
+}
+function writeDismissedNotificationIds(ids: Set<string>) {
+  localStorage.setItem("document-ledger.dismissed-notifications", JSON.stringify([...ids].slice(-1000)));
+}
 function isPreviewableExtension(extension: string) {
   return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "pdf", "doc", "docx", "txt", "md", "csv", "json", "xml", "log"].includes(extension.toLowerCase());
 }
