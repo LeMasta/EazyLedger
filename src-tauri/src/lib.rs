@@ -687,7 +687,7 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Ok(Preview::Image { path }),
         "pdf" => Ok(Preview::Pdf { path }),
         "docx" => Ok(Preview::Docx { path }),
-        "doc" => get_legacy_doc_preview(&id, Path::new(&path), &state),
+        "doc" => get_legacy_doc_preview(&id, Path::new(&path), state.inner()),
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
         _ => Ok(Preview::Unsupported { reason: "该格式尚未接入内置预览器".into() }),
     }
@@ -697,7 +697,7 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
 fn warm_doc_previews(state: State<AppState>) -> Result<usize, String> {
     let connection = open_db(&state.vault_path)?;
     let mut statement = connection
-        .prepare("SELECT id, relative_path FROM documents WHERE extension='doc' ORDER BY modified_at DESC LIMIT 32")
+        .prepare("SELECT id, relative_path FROM documents WHERE extension='doc' ORDER BY imported_at DESC LIMIT 32")
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
