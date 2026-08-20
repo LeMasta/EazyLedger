@@ -307,6 +307,10 @@ export default function App() {
 
   useEffect(() => {
     if (!selected) { setPreview(null); return; }
+    if (!isPreviewableExtension(selected.extension)) {
+      setPreview({ kind: "unsupported", reason: `${selected.extension.toUpperCase() || "该"}格式暂不支持内置预览，请使用默认程序打开。` });
+      return;
+    }
     let cancelled = false;
     let retryTimer: number | undefined;
     setPreview(null);
@@ -1188,7 +1192,7 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
   const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canTransform} title="向左旋转" onClick={() => setRotation((value) => value - 90)}><RotateCcw size={15} /></button><button disabled={!canTransform} title="向右旋转" onClick={() => setRotation((value) => value + 90)}><RotateCw size={15} /></button><span /><button disabled={!canTransform || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canTransform} className="zoom-value" title="恢复原始视图" onClick={() => { setRotation(0); setZoom(1); }}>{Math.round(zoom * 100)}%</button><button disabled={!canTransform || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
   const zoomCapture = controlPressed && canTransform ? <div className="preview-zoom-capture" title="Ctrl + 滚轮缩放预览" onWheel={handlePreviewWheel} /> : null;
   return <aside className="preview-pane custom-scrollbar"><header><FileIcon extension={document.extension} /><div><strong>{document.name}</strong><small>{formatSize(document.size)} · {document.extension.toUpperCase()}</small></div></header>
-    <div className="preview-stage">{controls()}<div className="preview-box">{renderPreviewContent()}{zoomCapture}</div></div>
+    <div className="preview-stage">{preview?.kind !== "unsupported" && controls()}<div className="preview-box">{renderPreviewContent()}{zoomCapture}</div></div>
     <section className="properties"><h3>标签</h3><div className="tag-editor">{allTags.map((tag) => <button className={document.tags.some((item) => item.id === tag.id) ? "active" : ""} key={tag.id} onClick={() => void toggleTag(tag)}><span style={{ background: tag.color }} />{tag.name}</button>)}</div><h3>备注</h3><textarea value={notes} placeholder="添加说明或检索关键词…" onChange={(event) => setNotes(event.target.value)} onBlur={async () => { if (notes !== document.notes) { await api.updateNotes(document.id, notes); await onChanged(); } }} /><dl>{document.expiresAt && <><dt>有效期</dt><dd><span className={`expiry-chip ${expiryState(document.expiresAt)?.kind}`}><CalendarClock size={11} />{expiryState(document.expiresAt)?.label}</span></dd></>}<dt>修改时间</dt><dd>{formatDate(document.modifiedAt, true)}</dd><dt>资料库路径</dt><dd title={document.relativePath}>{document.relativePath}</dd></dl><div className="preview-actions"><button onClick={() => void api.openDocument(document.id)}>打开文件</button><button onClick={() => void api.revealDocument(document.id)}>在资源管理器中显示</button></div></section>
     {fullscreen && <div className="preview-fullscreen" onMouseDown={() => setFullscreen(false)}><div onMouseDown={(event) => event.stopPropagation()}><header><div><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>Esc 退出全屏</small></span></div>{controls(true)}</header><main className="preview-box">{renderPreviewContent()}{zoomCapture}</main></div></div>}
   </aside>;
@@ -1294,6 +1298,9 @@ function readNotifications(): LedgerNotification[] {
   } catch { return []; }
 }
 function writeNotifications(items: LedgerNotification[]) { localStorage.setItem("document-ledger.notifications", JSON.stringify(items.slice(0, 200))); }
+function isPreviewableExtension(extension: string) {
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "pdf", "doc", "docx", "txt", "md", "csv", "json", "xml", "log"].includes(extension.toLowerCase());
+}
 function formatElapsed(milliseconds: number) { return `${Math.max(.1, milliseconds / 1000).toFixed(1)} 秒`; }
 function formatSize(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
 type ExpiryState = { days: number; kind: "expired" | "today" | "due-soon" | "active" | "safe"; label: string };
