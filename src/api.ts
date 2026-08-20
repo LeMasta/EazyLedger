@@ -160,6 +160,9 @@ export const api = {
   async restoreTrashItem(trashId: string): Promise<void> {
     if (desktop) await invoke("restore_trash_item", { trashId });
   },
+  async deleteTrashItem(trashId: string): Promise<void> {
+    if (desktop) await invoke("delete_trash_item", { trashId });
+  },
   async emptyTrash(): Promise<void> {
     if (desktop) await invoke("empty_trash");
   },

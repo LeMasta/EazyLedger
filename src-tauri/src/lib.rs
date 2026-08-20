@@ -13,7 +13,7 @@ use std::{
     process::Command,
     sync::{Arc, Mutex},
     thread,
-    time::UNIX_EPOCH,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
@@ -52,7 +52,7 @@ struct AppState {
 #[derive(Clone)]
 enum PreviewJobState {
     Running,
-    Failed(String),
+    Failed { reason: String, failed_at: Instant },
 }
 
 struct WatcherState(Mutex<Option<RecommendedWatcher>>);
@@ -240,6 +240,7 @@ pub fn run() {
             delete_documents,
             list_trash,
             restore_trash_item,
+            delete_trash_item,
             empty_trash,
             reveal_trash,
             update_preferences,
@@ -455,6 +456,34 @@ fn search_documents(
     Ok(documents)
 }
 
+fn normalize_import_paths(paths: Vec<String>, vault: &Path) -> Vec<PathBuf> {
+    let managed_files = vault.join("files");
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+
+    for raw in paths {
+        let original = PathBuf::from(raw);
+        let path = fs::canonicalize(&original).unwrap_or(original);
+        if is_ignored_system_entry(&path) || path.starts_with(&managed_files) {
+            continue;
+        }
+        let key = path.to_string_lossy().replace('\\', "/").to_lowercase();
+        if seen.insert(key) {
+            normalized.push(path);
+        }
+    }
+
+    normalized.sort_by_key(|path| path.components().count());
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for path in normalized {
+        if roots.iter().any(|root| root.is_dir() && path.starts_with(root)) {
+            continue;
+        }
+        roots.push(path);
+    }
+    roots
+}
+
 #[tauri::command]
 fn import_paths(
     paths: Vec<String>,
@@ -469,17 +498,11 @@ fn import_paths(
     if !node_exists {
         return Err("目标台账节点不存在".into());
     }
-    for raw in paths {
-        let path = PathBuf::from(raw);
-        if is_ignored_system_entry(&path) {
-            continue;
-        }
+    for path in normalize_import_paths(paths, &state.vault_path) {
         if path.is_dir() {
             import_directory_tree(&connection, &state.vault_path, &path, &node_id, &mode)?;
         } else if path.is_file() {
-            if !path.starts_with(state.vault_path.join("files")) {
-                import_one(&connection, &state.vault_path, &path, &node_id, &mode)?;
-            }
+            import_one(&connection, &state.vault_path, &path, &node_id, &mode)?;
         }
     }
     drop(connection);
@@ -539,12 +562,10 @@ fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usi
         .map_err(|error| error.to_string())?;
     if !node_exists { return Err("目标台账节点不存在".into()); }
     let before: i64 = connection.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0)).map_err(|error| error.to_string())?;
-    for raw in paths {
-        let path = PathBuf::from(raw);
-        if is_ignored_system_entry(&path) { continue; }
+    for path in normalize_import_paths(paths, &state.vault_path) {
         if path.is_dir() {
             import_directory_tree(&connection, &state.vault_path, &path, &node_id, "copy")?;
-        } else if path.is_file() && !path.starts_with(state.vault_path.join("files")) {
+        } else if path.is_file() {
             import_one(&connection, &state.vault_path, &path, &node_id, "copy")?;
         }
     }
@@ -741,8 +762,17 @@ fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<P
         Some(PreviewJobState::Running) => {
             return Ok(Preview::Loading { message: "正在后台生成 DOC 预览…".into() });
         }
-        Some(PreviewJobState::Failed(reason)) => {
-            return Ok(Preview::Unsupported { reason });
+        Some(PreviewJobState::Failed { reason, failed_at }) => {
+            if failed_at.elapsed() < Duration::from_secs(2) {
+                return Ok(Preview::Unsupported {
+                    reason: format!("{reason} 重新选择该文件即可重试。"),
+                });
+            }
+            state
+                .preview_jobs
+                .lock()
+                .map_err(|_| "DOC 预览任务状态异常".to_string())?
+                .remove(id);
         }
         None => {}
     }
@@ -789,7 +819,7 @@ fn queue_legacy_doc_preview(
                     states.remove(&id);
                 }
                 Err(reason) => {
-                    states.insert(id, PreviewJobState::Failed(reason));
+                    states.insert(id, PreviewJobState::Failed { reason, failed_at: Instant::now() });
                 }
             }
         }
@@ -1271,6 +1301,28 @@ fn restore_trash_item(trash_id: String, state: State<AppState>) -> Result<(), St
         ).map_err(|error| error.to_string())?;
     }
     connection.execute("DELETE FROM trash_items WHERE trash_id=?1", [&record.trash_id]).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_trash_item(trash_id: String, state: State<AppState>) -> Result<(), String> {
+    let connection = open_db(&state.vault_path)?;
+    let record = load_trash_record(&connection, &trash_id)?;
+    let storage_path = Path::new(&record.storage_name);
+    if storage_path.components().count() != 1 {
+        return Err("回收站记录包含无效路径".into());
+    }
+
+    let config = read_app_config(&state.config_path, &state.vault_path);
+    let path = resolved_trash_path(&config, &state.vault_path).join(storage_path);
+    if path.is_dir() {
+        fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
+    } else if path.exists() {
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+    }
+    connection
+        .execute("DELETE FROM trash_items WHERE trash_id=?1", [&trash_id])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
