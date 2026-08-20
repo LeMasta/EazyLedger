@@ -74,6 +74,9 @@ export const api = {
     }
     return demoPreview(demo.documents.find((d) => d.id === id)!);
   },
+  async warmDocPreviews(): Promise<number> {
+    return desktop ? invoke("warm_doc_previews") : 0;
+  },
   async createNode(parentId: string, name: string): Promise<void> {
     if (desktop) await invoke("create_node", { parentId, name });
     else demo.nodes.push({ id: crypto.randomUUID(), parentId, name, sortOrder: 99, documentCount: 0 });
