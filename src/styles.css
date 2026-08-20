@@ -558,7 +558,7 @@ button, input, textarea, select { font: inherit; }
 .unsupported span { color: #7d8998; line-height: 1.55; }
 .docx-preview { width: 100%; height: 100%; overflow: auto; background: #dfe3e8; }
 .docx-preview > .preview-loading { min-height: 100%; display: grid; place-items: center; }
-.docx-preview > div { min-width: min-content; padding: 18px; }
+.docx-preview > div { min-width: min-content; padding: 18px; zoom: var(--docx-zoom, 1); transform-origin: top center; }
 .docx-preview .docx-wrapper { padding: 16px !important; background: #dfe3e8 !important; }
 .docx-preview .docx-wrapper > section.docx { margin: 0 auto 16px !important; box-shadow: 0 3px 14px #1720332d !important; }
 .preview-box:has(.docx-preview) { display: block; }
