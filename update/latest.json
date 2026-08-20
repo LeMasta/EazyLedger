@@ -1,0 +1,15 @@
+{
+  "version": "0.5.5",
+  "notes": "EazyLedger Windows 更新。\n\n首次安装或手动更新可直接运行 EXE 覆盖安装；已安装版本也可在“设置 → 软件更新”中完成更新。",
+  "pub_date": "2026-08-20T02:17:00.056Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMmh3cFM4TzI4MU5RcFJGZHhhem5Wb0ZURkxFaTZsMDFXYWJHV1haVVhXM05sQUhsMVdZMnpITXBxWnhSZDNTcVlzVndReVd6cHhhNjRIeEZSZGNOVEE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTkyMjE2CWZpbGU6RWF6eUxlZGdlcl8wLjUuNV94NjQtc2V0dXAuZXhlCkozMHZwMzVIVUtUN0RzWXNwUStQRk1wK2tFeXNuNVdRK29vSWEweXB6WG5xc2J0ZTBHMTZpUS9WWWhVUFRtSm4xR2x5ZlVtNWUxdUFwYUJHTVgxYkNBPT0K",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/521621727"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMmh3cFM4TzI4MU5RcFJGZHhhem5Wb0ZURkxFaTZsMDFXYWJHV1haVVhXM05sQUhsMVdZMnpITXBxWnhSZDNTcVlzVndReVd6cHhhNjRIeEZSZGNOVEE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MTkyMjE2CWZpbGU6RWF6eUxlZGdlcl8wLjUuNV94NjQtc2V0dXAuZXhlCkozMHZwMzVIVUtUN0RzWXNwUStQRk1wK2tFeXNuNVdRK29vSWEweXB6WG5xc2J0ZTBHMTZpUS9WWWhVUFRtSm4xR2x5ZlVtNWUxdUFwYUJHTVgxYkNBPT0K",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/521621727"
+    }
+  }
+}

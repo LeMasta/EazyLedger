@@ -34,10 +34,23 @@ if ($platforms.Count -eq 0) {
 
 foreach ($platform in $platforms) {
   $currentUrl = [Uri]$platform.Value.url
-  $assetName = [Uri]::UnescapeDataString([IO.Path]::GetFileName($currentUrl.AbsolutePath))
-  $installerAsset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+
+  # tauri-action may already emit the authenticated GitHub Asset API URL,
+  # whose last path segment is a numeric asset ID rather than a file name.
+  $installerAsset = $release.assets |
+    Where-Object {
+      $_.url -eq $currentUrl.AbsoluteUri -or
+      $_.browser_download_url -eq $currentUrl.AbsoluteUri
+    } |
+    Select-Object -First 1
+
   if (-not $installerAsset) {
-    throw "Release $Tag 中找不到清单引用的安装包：$assetName"
+    $assetName = [Uri]::UnescapeDataString([IO.Path]::GetFileName($currentUrl.AbsolutePath))
+    $installerAsset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+  }
+
+  if (-not $installerAsset) {
+    throw "Release $Tag 中找不到清单引用的安装包：$($platform.Value.url)"
   }
 
   # GitHub API asset URL works with Accept: application/octet-stream, which
