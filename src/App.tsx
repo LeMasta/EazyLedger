@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { renderAsync } from "docx-preview";
@@ -905,10 +905,30 @@ function CommandMenu({ children }: { children: ReactNode }) {
   return <details className="command-menu"><summary title="更多操作"><MoreHorizontal size={18} /></summary><div>{children}</div></details>;
 }
 
+function FloatingMenu({ x, y, offsetY = 0, className = "", children }: { x: number; y: number; offsetY?: number; className?: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<CSSProperties>({ left: x, top: y + offsetY });
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const margin = 8;
+    const rect = element.getBoundingClientRect();
+    const safeWidth = Math.min(window.innerWidth, window.screen.availWidth || window.innerWidth);
+    const safeHeight = Math.min(window.innerHeight, window.screen.availHeight || window.innerHeight);
+    setPosition({
+      left: Math.max(margin, Math.min(x, safeWidth - rect.width - margin)),
+      top: Math.max(margin, Math.min(y + offsetY, safeHeight - rect.height - margin)),
+    });
+  }, [offsetY, x, y]);
+
+  return <div ref={ref} className={`context-menu ${className}`.trim()} style={position} onClick={(event) => event.stopPropagation()}>{children}</div>;
+}
+
 function FileContextMenu({ menu, document, deleteMode, onOpen, onReveal, onCopy, onCut, onRename, onExpiry, onStar, onDelete }: { menu: ContextMenuState & {}; document?: DocumentItem; deleteMode: DeleteMode; onOpen: () => void; onReveal: () => void; onCopy: () => void; onCut: () => void; onRename: () => void; onExpiry: () => void; onStar: () => void; onDelete: () => void }) {
-  return <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
+  return <FloatingMenu x={menu.x} y={menu.y}>
     <header>{document?.name}</header><button onClick={onOpen}>打开</button><button onClick={onReveal}>在资源管理器中显示</button><button onClick={onStar}><Star size={14} fill={document?.starred ? "currentColor" : "none"} />{document?.starred ? "取消星标" : "设为星标并置顶"}</button><hr /><button onClick={onCopy}><Copy size={14} />复制</button><button onClick={onCut}><Scissors size={14} />剪切</button><button onClick={onRename}><Pencil size={14} />重命名</button><button onClick={onExpiry}><CalendarClock size={14} />{document?.expiresAt ? "修改有效期" : "设置有效期"}</button><hr /><button className="danger" onClick={onDelete}><Trash2 size={14} />{deleteMode === "app" ? "移入应用回收站" : deleteMode === "system" ? "移入系统回收站" : "永久删除"}</button>
-  </div>;
+  </FloatingMenu>;
 }
 
 function SearchTagFilter({ tags, selectedIds, disabled, onToggle, onClear }: { tags: Tag[]; selectedIds: string[]; disabled: boolean; onToggle: (tagId: string) => void; onClear: () => void }) {
@@ -922,19 +942,19 @@ function ExpiryBubbleMenu({ menu, document, onSave }: { menu: ExpiryMenuState & 
   const [value, setValue] = useState(formatDateInput(document?.expiresAt ?? null));
   const state = expiryState(document?.expiresAt ?? null);
   const applyDays = (days: number) => { const date = new Date(); date.setDate(date.getDate() + days); date.setHours(23, 59, 59, 999); onSave(date.getTime()); };
-  return <div className="context-menu expiry-bubble-menu" style={{ left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y + 8, window.innerHeight - 300) }} onClick={(event) => event.stopPropagation()}>
+  return <FloatingMenu x={menu.x} y={menu.y} offsetY={8} className="expiry-bubble-menu">
     <header>{document?.name ?? "设置有效期"}</header>{state && <div className={`expiry-menu-current ${state.kind}`}><CalendarClock size={15} /><strong>{state.label}</strong></div>}
     <label>到期日期<input autoFocus type="date" value={value} onChange={(event) => setValue(event.target.value)} /></label>
     <div className="expiry-quick"><button onClick={() => applyDays(7)}>7 天后</button><button onClick={() => applyDays(30)}>30 天后</button><button onClick={() => applyDays(90)}>90 天后</button></div>
     <button className="expiry-apply" disabled={!value} onClick={() => value && onSave(new Date(`${value}T23:59:59`).getTime())}><Check size={14} />应用日期</button>
     {document?.expiresAt && <><hr /><button className="danger" onClick={() => onSave(null)}><X size={14} />清除有效期</button></>}
-  </div>;
+  </FloatingMenu>;
 }
 
 function TagBubbleMenu({ menu, documents, tags, onToggle, onEdit, onCreate, onOpenTag }: { menu: TagMenuState & {}; documents: DocumentItem[]; tags: Tag[]; onToggle: (tag: Tag) => void; onEdit: (tag: Tag) => void; onCreate: () => void; onOpenTag: (tag: Tag) => void }) {
   const selected = documents.filter((document) => menu.documentIds.includes(document.id));
   const sourceTag = tags.find((tag) => tag.id === menu.sourceTagId);
-  return <div className="context-menu tag-bubble-menu custom-scrollbar" style={{ left: Math.min(menu.x, window.innerWidth - 270), top: Math.min(menu.y + 8, window.innerHeight - 410) }} onClick={(event) => event.stopPropagation()}>
+  return <FloatingMenu x={menu.x} y={menu.y} offsetY={8} className="tag-bubble-menu custom-scrollbar">
     <header>{menu.documentIds.length ? `更改 ${menu.documentIds.length} 个文件的标签` : sourceTag?.name ?? "标签"}</header>
     {menu.documentIds.length > 0 && <div className="tag-toggle-list">{tags.map((tag) => {
       const applied = selected.length > 0 && selected.every((document) => document.tags.some((item) => item.id === tag.id));
@@ -942,7 +962,7 @@ function TagBubbleMenu({ menu, documents, tags, onToggle, onEdit, onCreate, onOp
     })}</div>}
     {menu.documentIds.length > 0 && <button onClick={onCreate}><Plus size={14} />新建并添加标签</button>}
     {sourceTag && <><hr /><button onClick={() => onOpenTag(sourceTag)}><Tags size={14} />进入“{sourceTag.name}”分类</button><button onClick={() => onEdit(sourceTag)}><Pencil size={14} />编辑名称和颜色</button>{menu.documentIds.length > 0 && <button className="danger" onClick={() => onToggle(sourceTag)}><X size={14} />从所选文件移除</button>}</>}
-  </div>;
+  </FloatingMenu>;
 }
 
 function TagEditorModal({ state, suggestedColor, onCancel, onSave }: { state: TagEditorState & {}; suggestedColor: string; onCancel: () => void; onSave: (name: string, color: string) => void }) {
@@ -1068,7 +1088,7 @@ function Tree({ nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePoin
   const siblingIndex = menuNode ? siblings.findIndex((item) => item.id === menuNode.id) : -1;
   return <div className="tree">
     {nodes.filter((node) => node.parentId === null).map((node) => <TreeNode key={node.id} node={node} {...rootProps} />)}
-    {nodeMenu && menuNode && <div className="context-menu node-context-menu" style={{ left: Math.min(nodeMenu.x, window.innerWidth - 245), top: Math.min(nodeMenu.y, window.innerHeight - 285) }} onClick={(event) => event.stopPropagation()}>
+    {nodeMenu && menuNode && <FloatingMenu x={nodeMenu.x} y={nodeMenu.y} className="node-context-menu">
       <header>{menuNode.name}</header>
       <button onClick={() => { setNodeMenu(null); onAdd(menuNode); }}><FolderPlus size={14} />新建子节点</button>
       {menuNode.id !== "root" && <><button onClick={() => { setNodeMenu(null); onRename(menuNode); }}><Pencil size={14} />重命名</button>
@@ -1076,7 +1096,7 @@ function Tree({ nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePoin
         <button disabled={siblingIndex <= 0} title={siblingIndex <= 0 ? "前面没有可作为上级的同级节点" : undefined} onClick={() => { setNodeMenu(null); onDemote(menuNode); }}><ChevronRight size={14} />降级到上一个同级节点</button>
         <hr /><button onClick={() => { setNodeMenu(null); onCopy(menuNode); }}><Copy size={14} />复制节点及内容</button>
         <button className="danger" onClick={() => { setNodeMenu(null); onDelete(menuNode); }}><Trash2 size={14} />删除节点及下级内容</button></>}
-    </div>}
+    </FloatingMenu>}
   </div>;
 }
 
