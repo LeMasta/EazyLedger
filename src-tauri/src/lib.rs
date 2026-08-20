@@ -906,13 +906,47 @@ fn delete_node(id: String, state: State<AppState>) -> Result<(), String> {
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
     let descendants = descendant_ids(&id, &nodes);
-    let documents = load_documents(&connection)?;
-    let document_ids: Vec<String> = documents.into_iter().filter(|document| descendants.contains(&document.node_id)).map(|document| document.id).collect();
+
+    // 节点删除必须读取数据库中的全部资料，不能复用会隐藏 Thumbs.db 等杂项的界面查询。
+    // 否则不可见的旧记录仍会通过 documents.node_id 引用节点，最终触发外键约束。
+    let document_records = {
+        let mut statement = connection
+            .prepare("SELECT id, node_id, display_name FROM documents")
+            .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?
+    };
+
+    let mut document_ids = Vec::new();
+    let mut ignored_document_ids = Vec::new();
+    for (document_id, node_id, name) in document_records {
+        if !descendants.contains(&node_id) { continue; }
+        if is_ignored_system_entry(Path::new(&name)) { ignored_document_ids.push(document_id); }
+        else { document_ids.push(document_id); }
+    }
+
     delete_documents_internal(&connection, &state, &document_ids)?;
+
+    // 已被界面隐藏的系统杂项不进入应用回收站，直接清除旧目录和数据库残留。
+    for document_id in ignored_document_ids {
+        let directory = state.vault_path.join("files").join(&document_id);
+        if directory.exists() {
+            fs::remove_dir_all(&directory).map_err(|error| format!("无法清理系统杂项文件：{error}"))?;
+        }
+        connection
+            .execute("DELETE FROM documents WHERE id=?1", [&document_id])
+            .map_err(|error| format!("无法清理系统杂项记录：{error}"))?;
+    }
+
     let mut node_ids: Vec<String> = descendants.into_iter().collect();
     node_ids.sort_by_key(|node_id| std::cmp::Reverse(node_depth(node_id, &nodes)));
     for node_id in node_ids {
-        connection.execute("DELETE FROM nodes WHERE id=?1", [&node_id]).map_err(|error| error.to_string())?;
+        connection
+            .execute("DELETE FROM nodes WHERE id=?1", [&node_id])
+            .map_err(|error| format!("节点仍被资料记录引用，无法完成删除：{error}"))?;
     }
     Ok(())
 }
