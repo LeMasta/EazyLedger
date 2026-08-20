@@ -166,8 +166,8 @@ jobs:
           New-Item -ItemType Directory -Force update | Out-Null
           Copy-Item "$env:RUNNER_TEMP/latest.json" "update/latest.json" -Force
 
-          git diff --quiet -- update/latest.json
-          if ($LASTEXITCODE -eq 0) {
+          $manifestChanges = git status --porcelain -- update/latest.json
+          if ([string]::IsNullOrWhiteSpace($manifestChanges)) {
             "稳定更新清单没有变化"
             exit 0
           }
