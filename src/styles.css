@@ -642,7 +642,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .preview-box { position: relative; margin: 14px; border-color: #d3d9e1; border-radius: 10px; box-shadow: var(--shadow-card); }
 .preview-pan-capture { position: absolute; z-index: 5; inset: 0; background: transparent; touch-action: none; }
 .preview-pan-capture:not(.can-pan) { cursor: zoom-in; }
-.preview-pan-capture.can-pan { cursor: grab; }
+.preview-pan-capture.can-pan { cursor: default; }
 .preview-pan-capture.panning { cursor: grabbing; }
 .preview-toolbar { border-color: #d6dce4; border-radius: 9px; box-shadow: var(--shadow-card); }
 .properties { margin: 0 12px 14px; padding: 1px 12px 13px; border: 1px solid #dce1e7; border-radius: 10px; background: white; box-shadow: var(--shadow-card); }
