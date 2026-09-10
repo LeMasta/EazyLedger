@@ -218,6 +218,7 @@ pub fn run() {
             reveal_document,
             reveal_vault,
             get_preview,
+            read_preview_image,
             warm_doc_previews,
             create_node,
             rename_node,
@@ -416,18 +417,21 @@ fn search_documents(
     query: String,
     node_id: Option<String>,
     tag_id: Option<String>,
+    include_descendants: bool,
     state: State<AppState>,
 ) -> Result<Vec<DocumentItem>, String> {
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
-    let descendants = node_id.as_ref().map(|id| descendant_ids(id, &nodes));
+    let scoped_node_ids = node_id.as_ref().map(|id| {
+        if include_descendants { descendant_ids(id, &nodes) } else { HashSet::from([id.clone()]) }
+    });
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|term| term.to_lowercase())
         .collect();
     let mut documents = load_documents(&connection)?;
     documents.retain(|document| {
-        let node_match = descendants
+        let node_match = scoped_node_ids
             .as_ref()
             .map(|ids| ids.contains(&document.node_id))
             .unwrap_or(true);
@@ -716,6 +720,18 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
         _ => Ok(Preview::Unsupported { reason: format!("{} 格式暂不支持内置预览，请使用默认程序打开。", extension.to_uppercase()) }),
     }
+}
+
+
+#[tauri::command]
+fn read_preview_image(id: String, state: State<AppState>) -> Result<tauri::ipc::Response, String> {
+    let path = document_path(&id, &state.vault_path)?;
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+        return Err("该文件不是受支持的图片格式".into());
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("无法读取图片：{error}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]

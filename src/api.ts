@@ -11,11 +11,11 @@ export const api = {
   async bootstrap(): Promise<BootstrapData> {
     return desktop ? invoke("bootstrap") : structuredClone(demo);
   },
-  async search(query: string, nodeId?: string | null, tagId?: string | null): Promise<DocumentItem[]> {
-    if (desktop) return invoke("search_documents", { query, nodeId, tagId });
+  async search(query: string, nodeId?: string | null, tagId?: string | null, includeDescendants = false): Promise<DocumentItem[]> {
+    if (desktop) return invoke("search_documents", { query, nodeId, tagId, includeDescendants });
     const q = query.trim().toLocaleLowerCase();
     return demo.documents.filter((d) => {
-      const inNode = !nodeId || nodeId === "root" || d.nodeId === nodeId || isDemoDescendant(d.nodeId, nodeId);
+      const inNode = !nodeId || d.nodeId === nodeId || (includeDescendants && isDemoDescendant(d.nodeId, nodeId));
       const hasTag = !tagId || d.tags.some((tag) => tag.id === tagId);
       const matches = !q || [d.name, d.notes, ...d.tags.map((tag) => tag.name)].join(" ").toLocaleLowerCase().includes(q);
       return inNode && hasTag && matches;
@@ -69,6 +69,16 @@ export const api = {
   async getPreview(id: string): Promise<Preview> {
     if (desktop) {
       const result = await invoke<Preview>("get_preview", { id });
+      if (result.kind === "image") {
+        try {
+          const bytes = await invoke<ArrayBuffer>("read_preview_image", { id });
+          const extension = result.path.split(".").pop()?.toLowerCase() ?? "";
+          const mime = extension === "png" ? "image/png" : extension === "gif" ? "image/gif" : extension === "webp" ? "image/webp" : extension === "bmp" ? "image/bmp" : "image/jpeg";
+          return { ...result, path: URL.createObjectURL(new Blob([bytes], { type: mime })) };
+        } catch {
+          return { ...result, path: convertFileSrc(result.path) };
+        }
+      }
       if ("path" in result && result.path) return { ...result, path: convertFileSrc(result.path) } as Preview;
       return result;
     }

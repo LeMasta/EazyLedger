@@ -785,3 +785,145 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 
 
+
+
+/* v0.6.0 — folder-scoped browsing, deliberate dragging and stable preview controls */
+.commandbar button.scope-active { border-color: #9fc3e5; color: #075a9d; background: #e7f3fc; }
+
+.tree-toggle {
+  width: 26px;
+  height: 28px;
+  margin-left: -3px;
+  flex: none;
+  border-radius: 6px;
+  color: #667486;
+}
+.tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
+.tree-toggle:focus-visible { outline-offset: 0; background: #dcecf9; }
+.tree-toggle:disabled { color: #b6bec8; }
+.node-drag-handle, .drag-handle {
+  width: 22px;
+  height: 26px;
+  padding: 0;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b96a4;
+  cursor: default;
+  opacity: 0;
+}
+.tree-row:hover .node-drag-handle, .tree-row:focus-within .node-drag-handle,
+.file-row:hover .drag-handle, .file-row:focus-within .drag-handle { opacity: 1; }
+.node-drag-handle:hover, .drag-handle:hover { color: #155fa8; background: #dceaf8; }
+.node-drag-handle:focus-visible, .drag-handle:focus-visible { opacity: 1; outline-offset: 0; }
+.drag-handle-spacer { width: 22px; flex: none !important; }
+.internal-pointer-dragging .node-drag-handle,
+.internal-pointer-dragging .drag-handle { cursor: grabbing !important; }
+
+.scope-banner {
+  min-height: 44px;
+  margin: 2px 1px 7px;
+  padding: 7px 11px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #bcd7ee;
+  border-radius: 8px;
+  color: #165f9f;
+  background: #edf7ff;
+}
+.scope-banner > span { min-width: 0; display: grid; gap: 2px; }
+.scope-banner strong { font-size: 11px; }
+.scope-banner small { color: #63788d; font-size: 9px; }
+.folder-row { cursor: default; }
+.folder-row:focus-visible { outline: 2px solid #76aaf0; outline-offset: -2px; background: #eef5ff; }
+.folder-row-spacer { width: 15px; height: 15px; }
+.file-icon-wrap > .folder-list-icon {
+  width: 32px;
+  height: 32px;
+  padding: 5px;
+  border-radius: 7px;
+  color: #c47d0d;
+  fill: #ffefb5;
+  background: #fff7e2;
+}
+.folder-row-enter { justify-self: center; color: #8995a3; }
+.folder-row:hover .folder-row-enter { color: #3478c7; transform: translateX(2px); }
+.document-source {
+  min-width: 0;
+  max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #537493;
+}
+
+.tag-row { grid-template-columns: minmax(0, 1fr) 40px 23px 23px; }
+.tag-order-actions { width: 40px; height: 24px; display: flex; align-items: center; opacity: 0; }
+.tag-row:hover .tag-order-actions, .tag-row:focus-within .tag-order-actions { opacity: 1; }
+.tag-order-actions button {
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #68778a;
+}
+.tag-order-actions button:hover:not(:disabled) { color: #075a9d; background: #d8e7f7; }
+.tag-order-actions button:disabled { opacity: .25; }
+.tag-row:hover .mini-action, .tag-row:focus-within .mini-action { opacity: 1; }
+
+.preview-box {
+  height: clamp(320px, 48vh, 520px);
+  cursor: default;
+  touch-action: auto;
+}
+.preview-box.can-pan { cursor: default; touch-action: none; }
+.preview-box.panning { cursor: grabbing; }
+.preview-image-canvas {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #f8fafc;
+}
+.preview-image {
+  display: block;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain;
+  transform-origin: center;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+.preview-fullscreen .preview-box { height: 100%; margin: 0; border: 0; border-radius: 0; }
+.preview-fullscreen .preview-image-canvas { background: #202733; }
+.preview-pan-capture { display: none; }
+
+.home-tree-toggle {
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  color: #667486;
+}
+.home-tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
+.home-tree-toggle:disabled { color: #c0c7d0; }
+
+@media (max-width: 1180px) {
+  .document-source { max-width: 110px; }
+  .node-drag-hint { display: none !important; }
+}
