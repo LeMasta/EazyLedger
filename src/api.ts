@@ -69,6 +69,16 @@ export const api = {
   async getPreview(id: string): Promise<Preview> {
     if (desktop) {
       const result = await invoke<Preview>("get_preview", { id });
+      if (result.kind === "image") {
+        try {
+          const bytes = await invoke<ArrayBuffer>("read_preview_image", { id });
+          const extension = result.path.split(".").pop()?.toLowerCase() ?? "";
+          const mime = extension === "png" ? "image/png" : extension === "gif" ? "image/gif" : extension === "webp" ? "image/webp" : extension === "bmp" ? "image/bmp" : "image/jpeg";
+          return { ...result, path: URL.createObjectURL(new Blob([bytes], { type: mime })) };
+        } catch {
+          return { ...result, path: convertFileSrc(result.path) };
+        }
+      }
       if ("path" in result && result.path) return { ...result, path: convertFileSrc(result.path) } as Preview;
       return result;
     }
