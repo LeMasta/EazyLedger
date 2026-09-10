@@ -5,14 +5,14 @@ import { renderAsync } from "docx-preview";
 import {
   AlertTriangle, Archive, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, Bell, CalendarClock, Check, CheckSquare, ChevronDown, ChevronRight, History,
   ClipboardPaste, Copy, Download, File, FileImage, FilePlus2, FileText, Folder, FolderInput,
-  FolderOpen, FolderPlus, HardDrive, Image, Import, Info, Maximize2, MoreHorizontal, PanelRightClose, Star,
+  FolderOpen, FolderPlus, GripVertical, HardDrive, Image, Import, Info, Maximize2, MoreHorizontal, PanelRightClose, Star,
   PanelRightOpen, Pencil, Plus, RefreshCw, RotateCcw, RotateCw, Scissors, Search, Tags, Trash2, X, House, Files, Settings, Database, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { api } from "./api";
 import type { AppTab, AppTabHistoryEntry, BootstrapData, DeleteMode, DocumentItem, NodeItem, Preview, Tag, TrashItem } from "./types";
 import { currentVersion, describeUpdateFailure, findUpdate, installPendingUpdate, previousInstallIssue, type AvailableUpdate, type UpdateFailure } from "./updater";
 
-const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "", history: [] };
+const initialTab: AppTab = { id: "home", title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history: [] };
 const tagColors = [
   "#2563eb", "#4f46e5", "#7c3aed", "#a855f7", "#db2777",
   "#e11d48", "#ef4444", "#f97316", "#f59e0b", "#eab308",
@@ -96,14 +96,25 @@ export default function App() {
     const preventBrowserZoom = (event: WheelEvent) => {
       if (event.ctrlKey) event.preventDefault();
     };
-    window.addEventListener("wheel", preventBrowserZoom, { capture: true, passive: false });
-    return () => window.removeEventListener("wheel", preventBrowserZoom, true);
+    const preventBrowserZoomKeys = (event: KeyboardEvent) => {
+      if (event.ctrlKey && ["+", "-", "=", "0"].includes(event.key)) event.preventDefault();
+    };
+    document.addEventListener("wheel", preventBrowserZoom, { capture: true, passive: false });
+    window.addEventListener("keydown", preventBrowserZoomKeys, { capture: true });
+    return () => {
+      document.removeEventListener("wheel", preventBrowserZoom, true);
+      window.removeEventListener("keydown", preventBrowserZoomKeys, true);
+    };
   }, []);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
   const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
+  const visibleChildNodes = useMemo(() => {
+    if (!data || activeTab.view !== "files" || !activeTab.nodeId || activeTab.tagId || activeTab.query || activeTab.includeDescendants || searchTagIds.length) return [];
+    return data.nodes.filter((node) => node.parentId === activeTab.nodeId).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-CN"));
+  }, [activeTab.includeDescendants, activeTab.nodeId, activeTab.query, activeTab.tagId, activeTab.view, data, searchTagIds.length]);
   const expiryAlerts = useMemo(() => (data?.documents ?? [])
     .map((document) => ({ document, expiry: expiryState(document.expiresAt) }))
     .filter((item): item is { document: DocumentItem; expiry: ExpiryState } => Boolean(item.expiry && item.expiry.days <= 30))
@@ -113,12 +124,15 @@ export default function App() {
   const refreshBootstrap = useCallback(async () => {
     const next = await api.bootstrap();
     next.nodes = applyStoredNodeOrder(next.nodes);
+    next.tags = applyStoredTagOrder(next.tags);
+    next.documents = next.documents.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
     setData(next);
     return next;
   }, []);
 
   const refreshDocuments = useCallback(async (tab: AppTab) => {
-    const next = await api.search(tab.query, tab.nodeId, tab.tagId);
+    const next = (await api.search(tab.query, tab.nodeId, tab.tagId, tab.includeDescendants))
+      .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
     const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
     setDocuments(filtered);
     setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
@@ -339,12 +353,17 @@ export default function App() {
     }
     let cancelled = false;
     let retryTimer: number | undefined;
+    let previewObjectUrl: string | undefined;
     setPreview(null);
 
     const loadPreview = async () => {
       try {
         const next = await api.getPreview(selected.id);
-        if (cancelled) return;
+        if (cancelled) {
+          if (next.kind === "image" && next.path.startsWith("blob:")) URL.revokeObjectURL(next.path);
+          return;
+        }
+        if (next.kind === "image" && next.path.startsWith("blob:")) previewObjectUrl = next.path;
         setPreview(next);
         if (next.kind === "loading") retryTimer = window.setTimeout(() => void loadPreview(), 350);
       } catch (reason) {
@@ -356,6 +375,7 @@ export default function App() {
     return () => {
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
     };
   }, [selected?.id]);
 
@@ -417,7 +437,7 @@ export default function App() {
   }
 
   function locationOf(tab: AppTab): AppTabHistoryEntry {
-    return { title: tab.title, view: tab.view, nodeId: tab.nodeId, tagId: tab.tagId, query: tab.query };
+    return { title: tab.title, view: tab.view, nodeId: tab.nodeId, tagId: tab.tagId, query: tab.query, includeDescendants: tab.includeDescendants };
   }
 
   function navigateActive(patch: Partial<AppTab>) {
@@ -444,14 +464,14 @@ export default function App() {
   function selectNode(node: NodeItem) {
     setTagMenu(null);
     setSearchTagIds([]);
-    navigateActive({ title: node.name, view: "files", nodeId: node.id, tagId: null, query: "" });
+    navigateActive({ title: node.name, view: "files", nodeId: node.id, tagId: null, query: "", includeDescendants: false });
     setSelectedIds(new Set());
   }
 
   function selectTag(tag: Tag) {
     setTagMenu(null);
     setSearchTagIds([]);
-    navigateActive({ title: `# ${tag.name}`, view: "files", nodeId: null, tagId: tag.id, query: "" });
+    navigateActive({ title: `# ${tag.name}`, view: "files", nodeId: null, tagId: tag.id, query: "", includeDescendants: false });
     setSelectedIds(new Set());
   }
 
@@ -523,7 +543,7 @@ export default function App() {
   }
 
   function goHome() {
-    navigateActive({ title: "主页", view: "home", nodeId: null, tagId: null, query: "" });
+    navigateActive({ title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false });
     setSearchTagIds([]);
     setSelectedIds(new Set());
   }
@@ -540,16 +560,17 @@ export default function App() {
   }
 
   function openSettings() {
-    navigateActive({ title: "设置", view: "settings", nodeId: null, tagId: null, query: "" });
+    navigateActive({ title: "设置", view: "settings", nodeId: null, tagId: null, query: "", includeDescendants: false });
     setSelectedIds(new Set());
   }
 
   function goUp() {
-    if (activeTab.view === "home") return;
-    if (activeTab.tagId || !activeTab.nodeId) { goHome(); return; }
+    if (activeTab.view !== "files" || !activeTab.nodeId) return;
     const node = data?.nodes.find((item) => item.id === activeTab.nodeId);
-    if (!node?.parentId) goHome();
-    else { const parent = data?.nodes.find((item) => item.id === node.parentId); if (parent) selectNode(parent); else goHome(); }
+    if (!node) return;
+    if (!node.parentId) { goHome(); return; }
+    const parent = data?.nodes.find((item) => item.id === node.parentId);
+    if (parent) selectNode(parent);
   }
 
   function handleRowSelect(event: ReactMouseEvent, document: DocumentItem, index: number) {
@@ -576,7 +597,9 @@ export default function App() {
   }
 
   function beginFilePointerDrag(event: ReactPointerEvent, document: DocumentItem) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button, input, a, select, textarea")) return;
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
     const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id];
     if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id]));
     pointerCandidateRef.current = {
@@ -587,7 +610,8 @@ export default function App() {
   }
 
   function beginNodePointerDrag(event: ReactPointerEvent, node: NodeItem) {
-    if (node.id === "root" || event.button !== 0 || (event.target as HTMLElement).closest("button, input, a, select, textarea")) return;
+    if (node.id === "root" || event.button !== 0) return;
+    event.preventDefault();
     event.stopPropagation();
     pointerCandidateRef.current = {
       kind: "node", nodeId: node.id, label: node.name,
@@ -730,6 +754,23 @@ export default function App() {
     });
   }
 
+  function moveTagOrder(tagId: string, direction: -1 | 1) {
+    if (!data) return;
+    const ids = data.tags.map((tag) => tag.id);
+    const index = ids.indexOf(tagId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    writeTagOrder(ids);
+    const reorderDocument = (document: DocumentItem) => ({ ...document, tags: applyStoredTagOrder(document.tags) });
+    setData((current) => current ? {
+      ...current,
+      tags: applyStoredTagOrder(current.tags),
+      documents: current.documents.map(reorderDocument),
+    } : current);
+    setDocuments((current) => current.map(reorderDocument));
+  }
+
   function renameNode(node: NodeItem) {
     if (node.id === "root") return;
     setDialog({
@@ -750,6 +791,7 @@ export default function App() {
   function deleteNode(node: NodeItem) {
     if (node.id === "root" || !data) return;
     const removedNodeIds = new Set([node.id, ...descendantNodeIds(node.id, data.nodes)]);
+    const fallbackNode = node.parentId ? data.nodes.find((item) => item.id === node.parentId) : undefined;
     const copy = deletionCopy(data.settings.deleteMode, 1, "节点及其中资料");
     setDialog({
       kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: copy.description, confirmLabel: copy.confirmLabel,
@@ -760,12 +802,22 @@ export default function App() {
           setSelectedIds(new Set());
           setPreview(null);
           try {
-            if (activeTab.nodeId && removedNodeIds.has(activeTab.nodeId)) {
-              goHome();
+            const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
+            setTabs((current) => current.map((tab) => {
+              const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
+              if (tab.id !== activeTabId || !browsingRemovedNode) return { ...tab, history };
+              return fallbackNode
+                ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
+                : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
+            }));
+            await refreshBootstrap();
+            if (browsingRemovedNode && fallbackNode) {
+              const next = await api.search("", fallbackNode.id, null, false);
+              setDocuments(next.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) })));
+            } else if (browsingRemovedNode) {
               setDocuments([]);
-              await refreshBootstrap();
             } else {
-              await refreshAll();
+              await refreshDocuments(activeTab);
             }
           } catch (refreshReason) {
             console.info("EazyLedger node deletion refresh failed", refreshReason);
@@ -921,7 +973,7 @@ export default function App() {
       <button className="new-tab" title="新建标签页" onClick={addTab}><Plus size={17} /></button>
     </nav>
     <section className="toolbar">
-      <div className="nav-buttons"><button onClick={goBack} disabled={!activeTab.history.length} title="返回"><ArrowLeft size={18} /></button><button onClick={goUp} disabled={activeTab.view === "home"} title="上一级"><ArrowUp size={18} /></button></div>
+      <div className="nav-buttons"><button onClick={goBack} disabled={!activeTab.history.length} title="返回上一条浏览历史"><ArrowLeft size={18} /></button><button onClick={goUp} disabled={activeTab.view !== "files" || !activeTab.nodeId} title="进入当前节点的上级节点"><ArrowUp size={18} /></button></div>
       <div className="address-bar"><button className="home-crumb" onClick={goHome}><House size={16} />主页</button>{breadcrumb.map((part) => <span className="crumb" key={part.id} onClick={() => selectNode(part)}><ChevronRight size={14} />{part.name}</span>)}{activeTab.tagId && <span className="crumb"><ChevronRight size={14} />{activeTab.title}</span>}</div>
       <div className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateSearchQuery(event.target.value)} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}<SearchTagFilter tags={data.tags} selectedIds={searchTagIds} disabled={activeTab.view === "settings"} onToggle={toggleSearchTag} onClear={() => setSearchTagIds([])} /></div>
     </section>
@@ -930,6 +982,7 @@ export default function App() {
       <button onClick={() => void chooseImportFolder()}><FolderInput size={16} />导入文件夹</button>
       <button onClick={() => void addNode()}><FolderPlus size={16} />新建节点</button>
       <button onClick={() => void addTag()}><Tags size={16} />新建标签</button>
+      <button className={activeTab.includeDescendants ? "scope-active" : ""} disabled={activeTab.view !== "files" || !activeTab.nodeId || Boolean(activeTab.tagId)} onClick={() => updateActive({ includeDescendants: !activeTab.includeDescendants })} title={activeTab.includeDescendants ? "恢复只显示当前节点直属文件" : "汇总当前节点及所有子节点的文件"}><Files size={16} />{activeTab.includeDescendants ? "仅看当前节点" : "查看全部文件"}</button>
       <button disabled={activeTab.view === "settings"} onClick={() => void pasteAvailableClipboard()} title="支持应用内复制及资源管理器复制的文件"><ClipboardPaste size={16} />粘贴</button>
       <CommandMenu>
         <button onClick={() => void renameCurrentNode()}>重命名当前节点</button><button onClick={() => void copyCurrentNode()}>复制当前节点及内容</button><button onClick={() => void moveCurrentNode()}>移动当前节点</button><button className="danger" onClick={() => void deleteCurrentNode()}>删除当前节点</button>
@@ -947,8 +1000,9 @@ export default function App() {
           <Tree nodes={data.nodes} selectedId={activeTab.nodeId} pointerDrag={pointerDrag} dropTarget={pointerDropTarget} onSelect={(node) => { if (!suppressPointerClickRef.current) selectNode(node); }} onNodePointerDown={beginNodePointerDrag} onPromote={(node) => void promoteNode(node)} onDemote={(node) => void demoteNode(node)} onAdd={(node) => void addNode(node.id)} onRename={(node) => void renameNode(node)} onCopy={(node) => void copyNode(node)} onDelete={(node) => void deleteNode(node)} />
         </SidebarSection>
         <SidebarSection storageKey="tags" title="标签" action={<Plus size={14} />} onAction={() => void addTag()}>
-          <div className="tag-list">{data.tags.map((tag) => <div className={`tag-row ${activeTab.tagId === tag.id ? "selected" : ""}`} key={tag.id}>
+          <div className="tag-list">{data.tags.map((tag, index) => <div className={`tag-row ${activeTab.tagId === tag.id ? "selected" : ""}`} key={tag.id}>
             <button className="tag-main" onClick={() => selectTag(tag)}><span className="tag-dot" style={{ background: tag.color }} /><span>{tag.name}</span><small>{tag.documentCount}</small></button>
+            <span className="tag-order-actions"><button title="标签上移" disabled={index === 0} onClick={() => moveTagOrder(tag.id, -1)}><ArrowUp size={11} /></button><button title="标签下移" disabled={index === data.tags.length - 1} onClick={() => moveTagOrder(tag.id, 1)}><ArrowDownAZ size={11} /></button></span>
             <button className="mini-action" title="编辑名称和颜色" onClick={() => editTag(tag)}><Pencil size={12} /></button>
             <button className="mini-action danger" title="删除标签" onClick={() => void removeTag(tag)}><Trash2 size={12} /></button>
           </div>)}</div>
@@ -968,26 +1022,32 @@ export default function App() {
           <span className="sort-heading"><button onClick={() => setSort("name")}>文件 <ArrowDownAZ size={13} /></button><select value={sortKey} aria-label="文件排序方式" onChange={(event) => setSort(event.target.value as SortKey)}><option value="modified">修改时间</option><option value="name">名称</option><option value="extension">文件类型</option><option value="size">大小</option><option value="expiry">有效期</option></select><button className="sort-direction" title={sortAscending ? "当前升序，点击切换降序" : "当前降序，点击切换升序"} onClick={() => setSortAscending((value) => !value)}>{sortAscending ? "↑" : "↓"}</button></span><button onClick={() => setSort("modified")}>修改日期</button><button onClick={() => setSort("size")}>大小</button><span className="star-column" title="星标文件始终置顶"><Star size={13} /></span>
         </div>
         <div className="file-list custom-scrollbar">
+          {activeTab.includeDescendants && activeTab.nodeId && <div className="scope-banner"><Files size={15} /><span><strong>正在查看全部文件</strong><small>包含“{activeTab.title}”及其所有子节点；每个文件下方显示所属路径</small></span></div>}
+          {visibleChildNodes.map((node) => <div className="file-row folder-row" key={`node:${node.id}`} role="button" tabIndex={0} aria-label={`进入文件夹 ${node.name}`} onDoubleClick={() => selectNode(node)} onKeyDown={(event) => { if (event.key === "Enter") selectNode(node); }}>
+            <span className="folder-row-spacer" aria-hidden="true" />
+            <span className="file-name"><button className="drag-handle" title={`拖动“${node.name}”`} aria-label={`拖动文件夹 ${node.name}`} onPointerDown={(event) => beginNodePointerDrag(event, node)} onClick={(event) => event.stopPropagation()}><GripVertical size={14} /></button><span className="file-icon-wrap"><Folder className="folder-list-icon" size={30} /></span><span><span className="file-title-line"><strong title={node.name}>{node.name}</strong></span><small className="file-subtitle"><span className="file-kind">子节点文件夹</span><span>包含 {node.documentCount} 份资料</span></small></span></span>
+            <span>—</span><span>—</span><ChevronRight className="folder-row-enter" size={17} aria-hidden="true" />
+          </div>)}
           {sortedDocuments.map((document, index) => {
             const expiry = expiryState(document.expiresAt);
             const visibleTags = document.tags.slice(0, data.settings.tagDisplayLimit);
             const hiddenTagCount = Math.max(0, document.tags.length - visibleTags.length);
             return <div
               className={`file-row ${document.starred ? "starred" : ""} ${selectedIds.has(document.id) ? "selected" : ""} ${pointerDrag?.kind === "files" && pointerDrag.ids.includes(document.id) ? "dragging" : ""} ${clipboard?.mode === "cut" && clipboard.ids.includes(document.id) ? "cut" : ""} ${expiry?.kind ?? ""}`}
-              key={document.id} onPointerDown={(event) => beginFilePointerDrag(event, document)}
+              key={document.id}
               onClick={(event) => { if (!suppressPointerClickRef.current) handleRowSelect(event, document, index); }} onDoubleClick={() => { if (!suppressPointerClickRef.current) void api.openDocument(document.id); }}
               onContextMenu={(event) => { event.preventDefault(); if (!selectedIds.has(document.id)) setSelectedIds(new Set([document.id])); setContextMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}
             >
               <input type="checkbox" checked={selectedIds.has(document.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleDocumentSelection(document.id, index)} aria-label={`选择 ${document.name}`} />
-              <span className="file-name"><span className="file-icon-wrap"><FileIcon extension={document.extension} />{document.starred && <Star className="star-corner" size={10} fill="currentColor" />}</span><span><span className="file-title-line"><strong title={document.name}>{document.name}</strong></span><small className="file-subtitle"><span className="file-kind">{document.extension.toUpperCase()} 文件</span>{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}<span className="row-tags">{visibleTags.map((tag) => <button className="tag-chip compact" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}{hiddenTagCount > 0 && <button className="tag-overflow" title={`还有 ${hiddenTagCount} 个标签`} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}>+{hiddenTagCount}</button>}<button className="add-tag-chip compact" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={9} /></button></span></small></span></span>
+              <span className="file-name"><button className="drag-handle" title={`拖动“${document.name}”`} aria-label={`拖动文件 ${document.name}`} onPointerDown={(event) => beginFilePointerDrag(event, document)} onClick={(event) => event.stopPropagation()}><GripVertical size={14} /></button><span className="file-icon-wrap"><FileIcon extension={document.extension} />{document.starred && <Star className="star-corner" size={10} fill="currentColor" />}</span><span><span className="file-title-line"><strong title={document.name}>{document.name}</strong></span><small className="file-subtitle"><span className="file-kind">{document.extension.toUpperCase()} 文件</span>{activeTab.includeDescendants && <span className="document-source" title={nodePath(document.nodeId, data.nodes)}><Folder size={9} />{nodePath(document.nodeId, data.nodes)}</span>}{expiry && <button className={`expiry-chip ${expiry.kind}`} title="修改有效期" onClick={(event) => { event.stopPropagation(); setExpiryMenu({ x: event.clientX, y: event.clientY, documentId: document.id }); }}><CalendarClock size={11} />{expiry.label}</button>}<span className="row-tags">{visibleTags.map((tag) => <button className="tag-chip compact" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids, sourceTagId: tag.id }); }} onDoubleClick={(event) => { event.stopPropagation(); selectTag(tag); }}>{tag.name}</button>)}{hiddenTagCount > 0 && <button className="tag-overflow" title={`还有 ${hiddenTagCount} 个标签`} onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}>+{hiddenTagCount}</button>}<button className="add-tag-chip compact" title="为文件添加标签" onClick={(event) => { event.stopPropagation(); const ids = selectedIds.has(document.id) ? [...selectedIds] : [document.id]; setTagMenu({ x: event.clientX, y: event.clientY, documentIds: ids }); }}><Plus size={9} /></button></span></small></span></span>
               <span>{formatDate(document.modifiedAt)}</span>
               <span>{formatSize(document.size)}</span>
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
-          {!documents.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
+          {!documents.length && !visibleChildNodes.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
-        <footer className="statusbar"><span>{documents.length} 个项目</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
+        <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : activeTab.includeDescendants ? "（递归范围）" : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}
@@ -1246,10 +1306,10 @@ function TreeNode({ node, nodes, selectedId, pointerDrag, dropTarget, onSelect, 
   }, [children.length, dropTarget?.position, isDropTarget, open]);
   return <>
     <div data-ledger-node-id={node.id} className={`tree-row ${selectedId === node.id ? "selected" : ""} ${isDraggedNode ? "node-dragging" : ""} ${isDropTarget ? `drop-target ${pointerDrag?.kind === "node" ? "node" : "files"}-target drop-${dropTarget?.position}` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
-      onPointerDown={(event) => onNodePointerDown(event, node)}
       onClick={() => onSelect(node)}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu({ x: event.clientX, y: event.clientY, node }); }}>
-      <button className="tree-toggle" onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span />}</button>
+      <button className="tree-toggle" title={children.length ? (open ? "收起子节点" : "展开子节点") : "没有子节点"} aria-label={children.length ? (open ? `收起 ${node.name}` : `展开 ${node.name}`) : undefined} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={15} /> : <ChevronRight size={15} />) : <span />}</button>
+      {node.id === "root" ? <span className="drag-handle-spacer" /> : <button className="node-drag-handle" title={`拖动“${node.name}”调整层级或顺序`} aria-label={`拖动节点 ${node.name}`} onPointerDown={(event) => onNodePointerDown(event, node)} onClick={(event) => event.stopPropagation()}><GripVertical size={13} /></button>}
       {open && children.length ? <FolderOpen size={16} /> : <Folder size={16} />}<span>{node.name}</span><small>{node.documentCount}</small><span className="node-drag-hint">{node.id === "root" ? "右键管理" : "拖拽调整 · 右键管理"}</span>
     </div>
     {open && children.map((child) => <TreeNode key={child.id} node={child} nodes={nodes} selectedId={selectedId} pointerDrag={pointerDrag} dropTarget={dropTarget} onSelect={onSelect} onNodePointerDown={onNodePointerDown} onContextMenu={onContextMenu} depth={depth + 1} />)}
@@ -1262,8 +1322,8 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [fullscreen, setFullscreen] = useState(false);
-  const [controlPressed, setControlPressed] = useState(false);
   const [panning, setPanning] = useState(false);
+  const [imageError, setImageError] = useState("");
   const panDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   useEffect(() => setNotes(document?.notes ?? ""), [document]);
   useEffect(() => {
@@ -1271,6 +1331,7 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     setZoom(1);
     setPan({ x: 0, y: 0 });
     setPanning(false);
+    setImageError("");
     panDragRef.current = null;
     setFullscreen(false);
   }, [document?.id]);
@@ -1280,25 +1341,15 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [fullscreen]);
-  useEffect(() => {
-    const updateControlState = (event: KeyboardEvent) => {
-      if (event.key === "Control") setControlPressed(event.type === "keydown");
-    };
-    const clearControlState = () => setControlPressed(false);
-    window.addEventListener("keydown", updateControlState);
-    window.addEventListener("keyup", updateControlState);
-    window.addEventListener("blur", clearControlState);
-    return () => {
-      window.removeEventListener("keydown", updateControlState);
-      window.removeEventListener("keyup", updateControlState);
-      window.removeEventListener("blur", clearControlState);
-    };
-  }, []);
   if (!document) return <aside className="preview-pane preview-empty custom-scrollbar"><Image size={36} /><p>单选文件以查看预览和属性</p></aside>;
-  const canRotate = preview?.kind === "image" || preview?.kind === "pdf";
-  const canZoom = canRotate || preview?.kind === "docx";
-  const canPan = canRotate && zoom > 1;
-  const transformStyle = { transform: `translate3d(${pan.x}px, ${pan.y}px, 0) rotate(${rotation}deg) scale(${zoom})` } as CSSProperties;
+  const isImage = preview?.kind === "image";
+  const canRotate = isImage;
+  const canZoom = isImage || preview?.kind === "docx";
+  const canPan = isImage && zoom > 1;
+  const transformStyle = {
+    transform: `translate3d(${pan.x}px, ${pan.y}px, 0) rotate(${rotation}deg) scale(${zoom})`,
+    transition: panning ? "none" : "transform .16s ease",
+  } as CSSProperties;
   const resetView = () => {
     setRotation(0);
     setZoom(1);
@@ -1309,25 +1360,26 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     if (next <= 1) setPan({ x: 0, y: 0 });
     return next;
   });
-  const handlePreviewWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+  const handlePreviewWheel = (event: ReactWheelEvent<HTMLElement>) => {
     if (!event.ctrlKey || !canZoom) return;
     event.preventDefault();
+    event.stopPropagation();
     changeZoom(event.deltaY < 0 ? .25 : -.25);
   };
-  const beginPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const beginPan = (event: ReactPointerEvent<HTMLElement>) => {
     if (!canPan || event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     panDragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y };
     setPanning(true);
   };
-  const movePan = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const movePan = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = panDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
     setPan({ x: drag.originX + event.clientX - drag.startX, y: drag.originY + event.clientY - drag.startY });
   };
-  const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const endPan = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = panDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1339,21 +1391,19 @@ function PreviewPane({ document, preview, allTags, onChanged }: { document: Docu
     await api.setDocumentTags(document!.id, ids.includes(tag.id) ? ids.filter((id) => id !== tag.id) : [...ids, tag.id]);
     await onChanged();
   }
-  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在读取预览…</span>}{preview?.kind === "loading" && <span className="preview-loading">{preview.message}</span>}{preview?.kind === "image" && <div className="preview-media-transform" style={transformStyle}><img src={preview.path} alt={document.name} draggable={false} /></div>}{preview?.kind === "pdf" && <div className="preview-media-transform" style={transformStyle}><iframe src={preview.path} title={document.name} /></div>}{preview?.kind === "docx" && <DocxPreview path={preview.path} zoom={zoom} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
-  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canRotate} title="向左旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value - 90); }}><RotateCcw size={15} /></button><button disabled={!canRotate} title="向右旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value + 90); }}><RotateCw size={15} /></button><span /><button disabled={!canZoom || zoom <= .5} title="缩小" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canZoom} className="zoom-value" title="适应窗口并复位" onClick={resetView}>{Math.round(zoom * 100)}%</button><button disabled={!canZoom || zoom >= 3} title="放大" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
-  const interactionCapture = (controlPressed || canPan) && canZoom ? <div
-    className={`preview-pan-capture ${canPan ? "can-pan" : ""} ${panning ? "panning" : ""}`}
-    title={canPan ? "按住鼠标左键拖动查看；Ctrl + 滚轮缩放" : "Ctrl + 滚轮缩放预览"}
-    onWheel={handlePreviewWheel}
-    onPointerDown={beginPan}
-    onPointerMove={movePan}
-    onPointerUp={endPan}
-    onPointerCancel={endPan}
-  /> : null;
+  const renderPreviewContent = () => <>{!preview && <span className="preview-loading">正在读取预览…</span>}{preview?.kind === "loading" && <span className="preview-loading">{preview.message}</span>}{preview?.kind === "image" && !imageError && <div className="preview-image-canvas"><img className="preview-image" src={preview.path} alt={document.name} draggable={false} style={transformStyle} onError={() => setImageError("图片数据读取失败，请尝试重新选择该文件。")} /></div>}{preview?.kind === "image" && imageError && <div className="unsupported"><FileIcon extension={document.extension} /><strong>图片预览加载失败</strong><span>{imageError}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}{preview?.kind === "pdf" && <iframe src={preview.path} title={document.name} />}{preview?.kind === "docx" && <DocxPreview path={preview.path} zoom={zoom} />}{preview?.kind === "text" && <pre>{preview.text}</pre>}{preview?.kind === "unsupported" && <div className="unsupported"><FileIcon extension={document.extension} /><strong>暂时无法预览此文件</strong><span>{preview.reason ?? "该格式尚未接入内置预览器"}</span><button onClick={() => void api.openDocument(document.id)}>使用默认程序打开</button></div>}</>;
+  const controls = (inFullscreen = false) => <div className="preview-toolbar" aria-label="预览工具"><button disabled={!canRotate} title="向左旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value - 90); }}><RotateCcw size={15} /></button><button disabled={!canRotate} title="向右旋转" onClick={() => { setPan({ x: 0, y: 0 }); setRotation((value) => value + 90); }}><RotateCw size={15} /></button><span /><button disabled={!canZoom || zoom <= .5} title="缩小图片或文档" onClick={() => changeZoom(-.25)}><ZoomOut size={15} /></button><button disabled={!canZoom} className="zoom-value" title="恢复适应窗口" onClick={resetView}>{Math.round(zoom * 100)}%</button><button disabled={!canZoom || zoom >= 3} title="放大图片或文档" onClick={() => changeZoom(.25)}><ZoomIn size={15} /></button><span />{inFullscreen ? <button title="退出全屏（Esc）" onClick={() => setFullscreen(false)}><X size={16} /></button> : <button disabled={!preview || preview.kind === "loading"} title="全屏预览" onClick={() => setFullscreen(true)}><Maximize2 size={15} /></button>}</div>;
+  const interactionProps = {
+    onWheelCapture: handlePreviewWheel,
+    onPointerDown: beginPan,
+    onPointerMove: movePan,
+    onPointerUp: endPan,
+    onPointerCancel: endPan,
+  };
   return <aside className="preview-pane custom-scrollbar"><header><FileIcon extension={document.extension} /><div><strong>{document.name}</strong><small>{formatSize(document.size)} · {document.extension.toUpperCase()}</small></div></header>
-    <div className="preview-stage">{preview?.kind !== "unsupported" && controls()}<div className="preview-box">{renderPreviewContent()}{interactionCapture}</div></div>
+    <div className="preview-stage">{preview?.kind !== "unsupported" && controls()}<div className={`preview-box ${canPan ? "can-pan" : ""} ${panning ? "panning" : ""}`} {...interactionProps}>{renderPreviewContent()}</div></div>
     <section className="properties"><h3>标签</h3><div className="tag-editor">{allTags.map((tag) => <button className={document.tags.some((item) => item.id === tag.id) ? "active" : ""} key={tag.id} onClick={() => void toggleTag(tag)}><span style={{ background: tag.color }} />{tag.name}</button>)}</div><h3>备注</h3><textarea value={notes} placeholder="添加说明或检索关键词…" onChange={(event) => setNotes(event.target.value)} onBlur={async () => { if (notes !== document.notes) { await api.updateNotes(document.id, notes); await onChanged(); } }} /><dl>{document.expiresAt && <><dt>有效期</dt><dd><span className={`expiry-chip ${expiryState(document.expiresAt)?.kind}`}><CalendarClock size={11} />{expiryState(document.expiresAt)?.label}</span></dd></>}<dt>修改时间</dt><dd>{formatDate(document.modifiedAt, true)}</dd><dt>资料库路径</dt><dd title={document.relativePath}>{document.relativePath}</dd></dl><div className="preview-actions"><button onClick={() => void api.openDocument(document.id)}>打开文件</button><button onClick={() => void api.revealDocument(document.id)}>在资源管理器中显示</button></div></section>
-    {fullscreen && <div className="preview-fullscreen" onMouseDown={() => setFullscreen(false)}><div onMouseDown={(event) => event.stopPropagation()}><header><div><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>Esc 退出全屏 · 放大后拖动查看</small></span></div>{controls(true)}</header><main className="preview-box">{renderPreviewContent()}{interactionCapture}</main></div></div>}
+    {fullscreen && <div className="preview-fullscreen" onMouseDown={() => setFullscreen(false)}><div onMouseDown={(event) => event.stopPropagation()}><header><div><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>Esc 退出全屏 · 图片放大后可拖动查看</small></span></div>{controls(true)}</header><main className={`preview-box ${canPan ? "can-pan" : ""} ${panning ? "panning" : ""}`} {...interactionProps}>{renderPreviewContent()}</main></div></div>}
   </aside>;
 }
 
@@ -1450,6 +1500,25 @@ function compareDocuments(a: DocumentItem, b: DocumentItem, key: SortKey, ascend
           : a.modifiedAt - b.modifiedAt;
   return (ascending ? comparison : -comparison) || a.name.localeCompare(b.name, "zh-CN");
 }
+function readTagOrder(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem("document-ledger.tag-order") ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch { return []; }
+}
+function writeTagOrder(ids: string[]) {
+  localStorage.setItem("document-ledger.tag-order", JSON.stringify([...new Set(ids)]));
+}
+function applyStoredTagOrder<T extends Tag>(tags: T[]): T[] {
+  const preferred = readTagOrder();
+  const rank = new Map(preferred.map((id, index) => [id, index]));
+  const original = new Map(tags.map((tag, index) => [tag.id, index]));
+  const ordered = [...tags].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER) || (original.get(a.id) ?? 0) - (original.get(b.id) ?? 0));
+  const activeIds = ordered.map((tag) => tag.id);
+  if (activeIds.some((id, index) => preferred[index] !== id) || preferred.length !== activeIds.length) writeTagOrder(activeIds);
+  return ordered;
+}
+
 function readNotifications(): LedgerNotification[] {
   try {
     const value = JSON.parse(localStorage.getItem("document-ledger.notifications") ?? "[]");
