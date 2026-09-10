@@ -761,17 +761,6 @@ fn warm_doc_previews(state: State<AppState>) -> Result<usize, String> {
     Ok(queued)
 }
 
-#[tauri::command]
-fn read_preview_image(id: String, state: State<AppState>) -> Result<tauri::ipc::Response, String> {
-    let path = document_path(&id, &state.vault_path)?;
-    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_lowercase();
-    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
-        return Err("该文件不是受支持的图片格式".into());
-    }
-    let bytes = fs::read(&path).map_err(|error| format!("无法读取图片数据：{error}"))?;
-    Ok(tauri::ipc::Response::new(bytes))
-}
-
 fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<Preview, String> {
     let cached_pdf = legacy_doc_cache_path(id, &state.vault_path);
     if preview_is_fresh(source, &cached_pdf) {
