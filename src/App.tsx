@@ -805,7 +805,8 @@ export default function App() {
             const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
             setTabs((current) => current.map((tab) => {
               const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
-              if (tab.id !== activeTabId || !browsingRemovedNode) return { ...tab, history };
+              const tabPointsToRemovedNode = Boolean(tab.nodeId && removedNodeIds.has(tab.nodeId));
+              if (!tabPointsToRemovedNode) return { ...tab, history };
               return fallbackNode
                 ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
                 : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
