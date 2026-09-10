@@ -218,6 +218,7 @@ pub fn run() {
             reveal_document,
             reveal_vault,
             get_preview,
+            read_preview_image,
             warm_doc_previews,
             create_node,
             rename_node,
@@ -719,6 +720,18 @@ fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
         _ => Ok(Preview::Unsupported { reason: format!("{} 格式暂不支持内置预览，请使用默认程序打开。", extension.to_uppercase()) }),
     }
+}
+
+
+#[tauri::command]
+fn read_preview_image(id: String, state: State<AppState>) -> Result<tauri::ipc::Response, String> {
+    let path = document_path(&id, &state.vault_path)?;
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+        return Err("该文件不是受支持的图片格式".into());
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("无法读取图片：{error}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
