@@ -78,7 +78,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.5.1");
+  const [appVersion, setAppVersion] = useState("0.6.0");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
