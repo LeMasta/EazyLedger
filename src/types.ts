@@ -66,6 +66,7 @@ export type AppTabHistoryEntry = {
   nodeId: string | null;
   tagId: string | null;
   query: string;
+  includeDescendants: boolean;
 };
 
 export type AppTab = AppTabHistoryEntry & {
