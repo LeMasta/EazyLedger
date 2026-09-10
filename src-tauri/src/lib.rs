@@ -416,18 +416,21 @@ fn search_documents(
     query: String,
     node_id: Option<String>,
     tag_id: Option<String>,
+    include_descendants: bool,
     state: State<AppState>,
 ) -> Result<Vec<DocumentItem>, String> {
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
-    let descendants = node_id.as_ref().map(|id| descendant_ids(id, &nodes));
+    let scoped_node_ids = node_id.as_ref().map(|id| {
+        if include_descendants { descendant_ids(id, &nodes) } else { HashSet::from([id.clone()]) }
+    });
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|term| term.to_lowercase())
         .collect();
     let mut documents = load_documents(&connection)?;
     documents.retain(|document| {
-        let node_match = descendants
+        let node_match = scoped_node_ids
             .as_ref()
             .map(|ids| ids.contains(&document.node_id))
             .unwrap_or(true);
