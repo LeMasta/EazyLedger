@@ -1,11 +1,15 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
+
+export type UpdateChannel = "stable" | "beta";
 
 export type AvailableUpdate = {
   version: string;
   notes: string;
   date: string | null;
+  channel: UpdateChannel;
 };
 
 export type UpdateProgress = {
@@ -21,8 +25,14 @@ export type UpdateFailure = {
   detail: string;
 };
 
-let pendingUpdate: Awaited<ReturnType<typeof check>> = null;
-let activeCheck: Promise<Awaited<ReturnType<typeof check>>> | null = null;
+type NativeUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
+type PendingUpdate =
+  | { kind: "stable"; update: NativeUpdate }
+  | { kind: "channel"; info: AvailableUpdate };
+
+let pendingUpdate: PendingUpdate | null = null;
+let activeCheck: Promise<AvailableUpdate | null> | null = null;
+let activeCheckIncludesBeta = false;
 const EXPECTED_VERSION_KEY = "eazyledger.update.expected-version";
 const CHECK_TIMEOUT_MS = 8_000;
 const STABLE_MANIFEST_URL = "https://raw.githubusercontent.com/LeMasta/EazyLedger/main/update/latest.json";
@@ -42,12 +52,36 @@ export function previousInstallIssue(current: string): string | null {
   return `上次计划安装 v${expected}，但当前仍是 v${current}。安装没有真正替换当前程序。请重新更新，也可以直接运行新版安装包覆盖升级，无需先卸载旧版。`;
 }
 
+function parsedVersion(value: string): { core: number[]; prerelease: string[] } {
+  const normalized = value.trim().replace(/^v/i, "").split("+")[0];
+  const [corePart, prereleasePart = ""] = normalized.split("-", 2);
+  return {
+    core: corePart.split(".").map((part) => Number.parseInt(part, 10) || 0),
+    prerelease: prereleasePart ? prereleasePart.split(".") : [],
+  };
+}
+
 function compareVersions(left: string, right: string): number {
-  const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const b = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+  const a = parsedVersion(left);
+  const b = parsedVersion(right);
+  for (let index = 0; index < Math.max(a.core.length, b.core.length); index += 1) {
+    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0);
     if (difference) return difference;
+  }
+  if (!a.prerelease.length && b.prerelease.length) return 1;
+  if (a.prerelease.length && !b.prerelease.length) return -1;
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const leftPart = a.prerelease[index];
+    const rightPart = b.prerelease[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+    const leftNumber = /^\d+$/.test(leftPart) ? Number(leftPart) : null;
+    const rightNumber = /^\d+$/.test(rightPart) ? Number(rightPart) : null;
+    if (leftNumber !== null && rightNumber !== null) return leftNumber - rightNumber;
+    if (leftNumber !== null) return -1;
+    if (rightNumber !== null) return 1;
+    return leftPart.localeCompare(rightPart);
   }
   return 0;
 }
@@ -66,7 +100,7 @@ async function fetchPublishedVersion(): Promise<string> {
   }
 }
 
-async function performUpdateCheck(): Promise<Awaited<ReturnType<typeof check>>> {
+async function performStableUpdateCheck(): Promise<NativeUpdate | null> {
   const installedVersion = await getVersion();
   const nativePromise = check({ timeout: CHECK_TIMEOUT_MS });
   const manifestOutcome = fetchPublishedVersion().then(
@@ -94,15 +128,30 @@ async function performUpdateCheck(): Promise<Awaited<ReturnType<typeof check>>> 
   throw first.error;
 }
 
-export async function findUpdate(): Promise<AvailableUpdate | null> {
-  if (!activeCheck) activeCheck = performUpdateCheck().finally(() => { activeCheck = null; });
-  pendingUpdate = await activeCheck;
-  if (!pendingUpdate) return null;
+async function performUpdateCheck(includeBeta: boolean): Promise<AvailableUpdate | null> {
+  pendingUpdate = null;
+  if (includeBeta) {
+    const info = await invoke<AvailableUpdate | null>("check_beta_update");
+    if (info) pendingUpdate = { kind: "channel", info };
+    return info;
+  }
+  const update = await performStableUpdateCheck();
+  if (!update) return null;
+  pendingUpdate = { kind: "stable", update };
   return {
-    version: pendingUpdate.version,
-    notes: pendingUpdate.body ?? "",
-    date: pendingUpdate.date ?? null,
+    version: update.version,
+    notes: update.body ?? "",
+    date: update.date ?? null,
+    channel: "stable",
   };
+}
+
+export async function findUpdate(includeBeta = false): Promise<AvailableUpdate | null> {
+  if (!activeCheck || activeCheckIncludesBeta !== includeBeta) {
+    activeCheckIncludesBeta = includeBeta;
+    activeCheck = performUpdateCheck(includeBeta).finally(() => { activeCheck = null; });
+  }
+  return activeCheck;
 }
 
 function failureDetail(reason: unknown): string {
@@ -113,7 +162,7 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
   const detail = failureDetail(reason);
   const normalized = detail.toLowerCase();
   if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("超时")) {
-    return { kind: "timeout", title: "GitHub 响应超时", message: "更新服务在 8 秒内没有响应。请稍后重试，或从 GitHub Release 手动下载安装包。", detail };
+    return { kind: "timeout", title: "GitHub 响应超时", message: "更新服务没有在限定时间内响应。请稍后重试，或从 GitHub Release 手动下载安装包。", detail };
   }
   if (normalized.includes("rate limit") || normalized.includes("429") || normalized.includes("403")) {
     return { kind: "rate-limit", title: "GitHub 暂时限制了请求", message: "已连接到 GitHub，但当前请求受到频率限制。等待几分钟后重试。", detail };
@@ -132,28 +181,33 @@ export function describeUpdateFailure(reason: unknown): UpdateFailure {
 
 export async function installPendingUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void> {
   if (!pendingUpdate) throw new Error("更新信息已经失效，请重新检查更新");
-  const targetVersion = pendingUpdate.version;
+  const targetVersion = pendingUpdate.kind === "stable" ? pendingUpdate.update.version : pendingUpdate.info.version;
   localStorage.setItem(EXPECTED_VERSION_KEY, targetVersion);
-  let downloaded = 0;
-  let total: number | null = null;
   try {
-    await pendingUpdate.downloadAndInstall((event) => {
-      if (event.event === "Started") {
-        total = event.data.contentLength ?? null;
-        downloaded = 0;
-      } else if (event.event === "Progress") {
-        downloaded += event.data.chunkLength;
-      }
-      onProgress({
-        downloaded,
-        total,
-        percent: total && total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : null,
+    if (pendingUpdate.kind === "channel") {
+      const onEvent = new Channel<UpdateProgress>();
+      onEvent.onmessage = onProgress;
+      await invoke("install_beta_update", { expectedVersion: targetVersion, onEvent });
+    } else {
+      let downloaded = 0;
+      let total: number | null = null;
+      await pendingUpdate.update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? null;
+          downloaded = 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+        }
+        onProgress({
+          downloaded,
+          total,
+          percent: total && total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : null,
+        });
       });
-    });
+    }
   } catch (error) {
     localStorage.removeItem(EXPECTED_VERSION_KEY);
     throw error;
   }
   await relaunch();
 }
-

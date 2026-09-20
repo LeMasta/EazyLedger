@@ -179,9 +179,9 @@ export const api = {
   async revealTrash(): Promise<void> {
     if (desktop) await invoke("reveal_trash");
   },
-  async updatePreferences(deleteMode: DeleteMode, tagDisplayLimit: number): Promise<AppSettings> {
-    if (desktop) return invoke("update_preferences", { deleteMode, tagDisplayLimit });
-    demo.settings = { ...demo.settings, deleteMode, tagDisplayLimit };
+  async updatePreferences(deleteMode: DeleteMode, tagDisplayLimit: number, receiveBetaUpdates: boolean): Promise<AppSettings> {
+    if (desktop) return invoke("update_preferences", { deleteMode, tagDisplayLimit, receiveBetaUpdates });
+    demo.settings = { ...demo.settings, deleteMode, tagDisplayLimit, receiveBetaUpdates };
     return structuredClone(demo.settings);
   },
   async changeTrashLocation(): Promise<string | null> {

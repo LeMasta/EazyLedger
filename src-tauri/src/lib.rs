@@ -15,11 +15,18 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State, Url};
+use tauri_plugin_updater::{Update, UpdaterExt};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 const ROOT_NODE_ID: &str = "root";
+const STABLE_UPDATE_ENDPOINTS: [&str; 2] = [
+    "https://raw.githubusercontent.com/LeMasta/EazyLedger/main/update/latest.json",
+    "https://github.com/LeMasta/EazyLedger/releases/latest/download/latest.json",
+];
+const BETA_UPDATE_ENDPOINT: &str =
+    "https://raw.githubusercontent.com/LeMasta/EazyLedger/beta-channel/update/latest.json";
 
 fn is_ignored_system_entry(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|value| value.to_str()) else { return false; };
@@ -64,6 +71,7 @@ struct AppConfig {
     delete_mode: String,
     trash_path: String,
     tag_display_limit: usize,
+    receive_beta_updates: bool,
 }
 
 impl Default for AppConfig {
@@ -73,6 +81,7 @@ impl Default for AppConfig {
             delete_mode: "app".into(),
             trash_path: String::new(),
             tag_display_limit: 3,
+            receive_beta_updates: false,
         }
     }
 }
@@ -84,6 +93,24 @@ struct AppSettings {
     trash_path: String,
     tag_display_limit: usize,
     trash_count: i64,
+    receive_beta_updates: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelUpdateInfo {
+    version: String,
+    notes: String,
+    date: Option<String>,
+    channel: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelUpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+    percent: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -245,6 +272,8 @@ pub fn run() {
             empty_trash,
             reveal_trash,
             update_preferences,
+            check_beta_update,
+            install_beta_update,
             change_trash_location,
             export_manifest,
             create_backup,
@@ -294,6 +323,7 @@ fn load_app_settings(state: &AppState) -> Result<AppSettings, String> {
         trash_path: trash_path.to_string_lossy().to_string(),
         tag_display_limit: config.tag_display_limit,
         trash_count,
+        receive_beta_updates: config.receive_beta_updates,
     })
 }
 
@@ -1365,13 +1395,119 @@ fn reveal_trash(state: State<AppState>) -> Result<(), String> {
     open::that(trash_path).map_err(|error| error.to_string())
 }
 
+async fn check_update_endpoint(app: &AppHandle, endpoint: &str) -> Result<Option<Update>, String> {
+    let endpoint = Url::parse(endpoint).map_err(|error| error.to_string())?;
+    app.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn newer_channel_update(
+    stable: Option<Update>,
+    beta: Option<Update>,
+) -> Option<(Update, &'static str)> {
+    match (stable, beta) {
+        (Some(stable), Some(beta)) => {
+            let stable_version = semver::Version::parse(stable.version.trim_start_matches('v')).ok();
+            let beta_version = semver::Version::parse(beta.version.trim_start_matches('v')).ok();
+            match (stable_version, beta_version) {
+                (Some(stable_version), Some(beta_version)) if stable_version >= beta_version => {
+                    Some((stable, "stable"))
+                }
+                (Some(_), None) => Some((stable, "stable")),
+                _ => Some((beta, "beta")),
+            }
+        }
+        (Some(stable), None) => Some((stable, "stable")),
+        (None, Some(beta)) => Some((beta, "beta")),
+        (None, None) => None,
+    }
+}
+
+async fn find_channel_update(app: &AppHandle) -> Result<Option<(Update, &'static str)>, String> {
+    let stable = check_update_endpoint(app, STABLE_UPDATE_ENDPOINTS[0]).await;
+    let stable = match stable {
+        Ok(value) => Ok(value),
+        Err(first_error) => check_update_endpoint(app, STABLE_UPDATE_ENDPOINTS[1])
+            .await
+            .map_err(|second_error| format!("稳定版更新源不可用：{first_error}; {second_error}")),
+    };
+    let beta = check_update_endpoint(app, BETA_UPDATE_ENDPOINT).await;
+
+    match (stable, beta) {
+        (Ok(stable), Ok(beta)) => Ok(newer_channel_update(stable, beta)),
+        (Ok(Some(stable)), Err(_)) => Ok(Some((stable, "stable"))),
+        (Err(_), Ok(Some(beta))) => Ok(Some((beta, "beta"))),
+        (Ok(None), Err(error)) => Err(format!("测试版更新源不可用：{error}")),
+        (Err(error), Ok(None)) => Err(error),
+        (Err(stable_error), Err(beta_error)) => {
+            Err(format!("{stable_error}; 测试版更新源不可用：{beta_error}"))
+        }
+    }
+}
+
 #[tauri::command]
-fn update_preferences(delete_mode: String, tag_display_limit: usize, state: State<AppState>) -> Result<AppSettings, String> {
+async fn check_beta_update(app: AppHandle) -> Result<Option<ChannelUpdateInfo>, String> {
+    let Some((update, channel)) = find_channel_update(&app).await? else {
+        return Ok(None);
+    };
+    Ok(Some(ChannelUpdateInfo {
+        version: update.version.clone(),
+        notes: update.body.clone().unwrap_or_default(),
+        date: update.date.map(|date| date.to_string()),
+        channel: channel.into(),
+    }))
+}
+
+#[tauri::command]
+async fn install_beta_update(
+    app: AppHandle,
+    expected_version: String,
+    on_event: Channel<ChannelUpdateProgress>,
+) -> Result<(), String> {
+    let Some((update, _)) = find_channel_update(&app).await? else {
+        return Err("更新信息已经失效，请重新检查更新".into());
+    };
+    if update.version != expected_version {
+        return Err(format!(
+            "更新版本已经变化（原计划 v{expected_version}，当前为 v{}），请重新检查更新",
+            update.version
+        ));
+    }
+    let mut downloaded = 0_u64;
+    update
+        .download_and_install(
+            move |chunk_length, total| {
+                downloaded += chunk_length as u64;
+                let percent = total.filter(|value| *value > 0).map(|value| {
+                    ((downloaded.saturating_mul(100) / value).min(100)) as u64
+                });
+                let _ = on_event.send(ChannelUpdateProgress {
+                    downloaded,
+                    total,
+                    percent,
+                });
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_preferences(delete_mode: String, tag_display_limit: usize, receive_beta_updates: bool, state: State<AppState>) -> Result<AppSettings, String> {
     if !matches!(delete_mode.as_str(), "app" | "system" | "permanent") { return Err("不支持的删除方式".into()); }
     if !(1..=10).contains(&tag_display_limit) { return Err("标签显示上限必须在 1 到 10 之间".into()); }
     let mut config = read_app_config(&state.config_path, &state.vault_path);
     config.delete_mode = delete_mode;
     config.tag_display_limit = tag_display_limit;
+    config.receive_beta_updates = receive_beta_updates;
     write_app_config(&state.config_path, &config)?;
     load_app_settings(&state)
 }
