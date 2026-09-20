@@ -25,6 +25,7 @@ export const demoData: BootstrapData = {
     trashPath: "D:\\EazyLedger\\database\\trash",
     tagDisplayLimit: 3,
     trashCount: 0,
+    receiveBetaUpdates: false,
   },
 };
 
@@ -44,4 +45,3 @@ export function demoPreview(document: DocumentItem): Preview {
   }
   return { kind: "unsupported" };
 }
-
