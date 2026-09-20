@@ -78,7 +78,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.6.0");
+  const [appVersion, setAppVersion] = useState("0.6.1");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
@@ -796,33 +796,30 @@ export default function App() {
     setDialog({
       kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: copy.description, confirmLabel: copy.confirmLabel,
       onConfirm: () => void runAction(async () => {
+        await api.deleteNode(node.id);
+        setSelectedIds(new Set());
+        setPreview(null);
         try {
-          await api.deleteNode(node.id);
-        } finally {
-          setSelectedIds(new Set());
-          setPreview(null);
-          try {
-            const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
-            setTabs((current) => current.map((tab) => {
-              const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
-              const tabPointsToRemovedNode = Boolean(tab.nodeId && removedNodeIds.has(tab.nodeId));
-              if (!tabPointsToRemovedNode) return { ...tab, history };
-              return fallbackNode
-                ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
-                : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
-            }));
-            await refreshBootstrap();
-            if (browsingRemovedNode && fallbackNode) {
-              const next = await api.search("", fallbackNode.id, null, false);
-              setDocuments(next.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) })));
-            } else if (browsingRemovedNode) {
-              setDocuments([]);
-            } else {
-              await refreshDocuments(activeTab);
-            }
-          } catch (refreshReason) {
-            console.info("EazyLedger node deletion refresh failed", refreshReason);
+          const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
+          setTabs((current) => current.map((tab) => {
+            const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
+            const tabPointsToRemovedNode = Boolean(tab.nodeId && removedNodeIds.has(tab.nodeId));
+            if (!tabPointsToRemovedNode) return { ...tab, history };
+            return fallbackNode
+              ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
+              : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
+          }));
+          await refreshBootstrap();
+          if (browsingRemovedNode && fallbackNode) {
+            const next = await api.search("", fallbackNode.id, null, false);
+            setDocuments(next.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) })));
+          } else if (browsingRemovedNode) {
+            setDocuments([]);
+          } else {
+            await refreshDocuments(activeTab);
           }
+        } catch (refreshReason) {
+          console.info("EazyLedger node deletion refresh failed", refreshReason);
         }
       }),
     });
