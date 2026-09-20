@@ -1,0 +1,15 @@
+{
+  "version": "0.7.0-beta.1",
+  "notes": "EazyLedger Windows Beta 测试版，用于提前体验和快速反馈。\n\n测试版可能存在未发现的问题，安装前建议先在“设置”中创建完整备份。可直接运行 EXE 覆盖安装，也可在开启“接收测试版”后通过应用内更新安装。",
+  "pub_date": "2026-09-20T07:59:39.218Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMnJLMmhKRTIydE1va3N6KzdrNlp0T0xzVThwRFAxMDN5MVpMUVN3cUlHVy93aWpWbnZVdys1MFE1WkRvVUt5QzRSTmlnVHRlWmpxT3JsMEhtR2VGZmd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODkxMTc2CWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjFfeDY0LXNldHVwLmV4ZQpEVWRvWUp5b0RxUjdpOTF2T0xlak1FblZ4bEJVbVZ2ZWNkZllNQy9Jb01ZdU5sb1Fxa0V3UlR1YzZhOWNRcitJLy9IMEYyck1LbVo5TUlKaWVtbWxEdz09Cg==",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/576398219"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMnJLMmhKRTIydE1va3N6KzdrNlp0T0xzVThwRFAxMDN5MVpMUVN3cUlHVy93aWpWbnZVdys1MFE1WkRvVUt5QzRSTmlnVHRlWmpxT3JsMEhtR2VGZmd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODkxMTc2CWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjFfeDY0LXNldHVwLmV4ZQpEVWRvWUp5b0RxUjdpOTF2T0xlak1FblZ4bEJVbVZ2ZWNkZllNQy9Jb01ZdU5sb1Fxa0V3UlR1YzZhOWNRcitJLy9IMEYyck1LbVo5TUlKaWVtbWxEdz09Cg==",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/576398219"
+    }
+  }
+}
