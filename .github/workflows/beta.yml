@@ -158,6 +158,8 @@ jobs:
       - name: 将 Beta 更新清单同步到 beta-channel
         shell: pwsh
         run: |
+          # Tauri 构建可能改写 Cargo.toml；发布清单前恢复临时构建变更。
+          git restore --source=HEAD --staged --worktree -- .
           git fetch origin beta-channel 2>$null
           if ($LASTEXITCODE -eq 0) {
             git switch --force-create beta-channel origin/beta-channel
@@ -178,4 +180,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: publish beta updater manifest for ${{ steps.version.outputs.tag }}"
-          git push origin HEAD:beta-channel
+          git push origin HEAD:refs/heads/beta-channel
