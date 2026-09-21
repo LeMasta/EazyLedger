@@ -790,6 +790,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* v0.6.0 — folder-scoped browsing, deliberate dragging and stable preview controls */
 .commandbar button.scope-active { border-color: #9fc3e5; color: #075a9d; background: #e7f3fc; }
 
+/* Dragging is deliberately limited to the dedicated handles. These rules also
+   override the legacy v0.4.5 whole-row drag affordance above. */
+.file-row, .tree-row { cursor: default; touch-action: auto; }
+
 .tree-toggle {
   width: 26px;
   height: 28px;
@@ -798,7 +802,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 6px;
   color: #667486;
 }
-.tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
+.tree-toggle-placeholder { pointer-events: none; }
+button.tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
 .tree-toggle:focus-visible { outline-offset: 0; background: #dcecf9; }
 .tree-toggle:disabled { color: #b6bec8; }
 .node-drag-handle, .drag-handle {
@@ -812,9 +817,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 5px;
   background: transparent;
   color: #8b96a4;
-  cursor: default;
+  cursor: grab;
+  touch-action: none;
   opacity: 0;
 }
+.node-drag-handle:active, .drag-handle:active { cursor: grabbing; }
 .tree-row:hover .node-drag-handle, .tree-row:focus-within .node-drag-handle,
 .file-row:hover .drag-handle, .file-row:focus-within .drag-handle { opacity: 1; }
 .node-drag-handle:hover, .drag-handle:hover { color: #155fa8; background: #dceaf8; }

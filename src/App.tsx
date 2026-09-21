@@ -58,6 +58,7 @@ type AppDialogState =
 export default function App() {
   const [data, setData] = useState<BootstrapData | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
   const [tabs, setTabs] = useState<AppTab[]>([initialTab]);
   const [activeTabId, setActiveTabId] = useState("home");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -78,7 +79,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() => readSortPreference().key);
   const [sortAscending, setSortAscending] = useState(() => readSortPreference().ascending);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState("0.6.0");
+  const [appVersion, setAppVersion] = useState("0.7.0-beta.2");
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
@@ -91,6 +92,9 @@ export default function App() {
   const importInFlightRef = useRef(false);
   const recentExternalImportRef = useRef<{ key: string; at: number } | null>(null);
   const suppressPointerClickRef = useRef(false);
+  const receiveBetaUpdatesRef = useRef(false);
+  const documentRequestIdRef = useRef(0);
+  const documentLocationRef = useRef("");
 
   useEffect(() => {
     const preventBrowserZoom = (event: WheelEvent) => {
@@ -108,6 +112,8 @@ export default function App() {
   }, []);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const documentLocationKey = [activeTabId, activeTab.view, activeTab.nodeId ?? "", activeTab.tagId ?? "", String(activeTab.includeDescendants)].join("\u0000");
+  const documentQueryKey = [documentLocationKey, activeTab.query, ...searchTagIds].join("\u0000");
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
   const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
@@ -126,16 +132,25 @@ export default function App() {
     next.nodes = applyStoredNodeOrder(next.nodes);
     next.tags = applyStoredTagOrder(next.tags);
     next.documents = next.documents.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
+    receiveBetaUpdatesRef.current = next.settings.receiveBetaUpdates;
     setData(next);
     return next;
   }, []);
 
   const refreshDocuments = useCallback(async (tab: AppTab) => {
-    const next = (await api.search(tab.query, tab.nodeId, tab.tagId, tab.includeDescendants))
-      .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
-    const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
-    setDocuments(filtered);
-    setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
+    if (tab.view !== "files") return;
+    const requestId = ++documentRequestIdRef.current;
+    setDocumentsLoading(true);
+    try {
+      const next = (await api.search(tab.query, tab.nodeId, tab.tagId, tab.includeDescendants))
+        .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
+      const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
+      if (requestId !== documentRequestIdRef.current) return;
+      setDocuments(filtered);
+      setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
+    } finally {
+      if (requestId === documentRequestIdRef.current) setDocumentsLoading(false);
+    }
   }, [searchTagIds]);
 
   const refreshAll = useCallback(async () => {
@@ -154,11 +169,11 @@ export default function App() {
       ? { ...current, message: "主更新地址响应较慢，正在尝试备用地址…" }
       : current), 1_500);
     try {
-      const info = await findUpdate();
+      const info = await findUpdate(receiveBetaUpdatesRef.current);
       const lastCheckedAt = Date.now();
       const elapsed = formatElapsed(performance.now() - startedAt);
-      if (info) setUpdateUi({ phase: "available", info, lastCheckedAt, message: `已连接 GitHub（${elapsed}），发现新版本 ${info.version}` });
-      else setUpdateUi({ phase: "current", lastCheckedAt, message: `已连接 GitHub（${elapsed}）；当前已是最新版本` });
+      if (info) setUpdateUi({ phase: "available", info, lastCheckedAt, message: `已连接 GitHub（${elapsed}），发现${info.channel === "beta" ? "测试" : "正式"}版本 ${info.version}` });
+      else setUpdateUi({ phase: "current", lastCheckedAt, message: `已连接 GitHub（${elapsed}）；当前已是最新${receiveBetaUpdatesRef.current ? "测试或正式" : "正式"}版本` });
     } catch (reason) {
       const failure = describeUpdateFailure(reason);
       const elapsed = formatElapsed(performance.now() - startedAt);
@@ -204,13 +219,34 @@ export default function App() {
         const issue = previousInstallIssue(version);
         if (issue) setSettingsNotice(issue);
       } catch { /* 版本读取失败不影响资料库使用 */ }
-      await checkForUpdates(false);
     })();
-  }, [checkForUpdates]);
+  }, []);
 
   useEffect(() => {
-    if (!data) return;
-    const timer = window.setTimeout(() => void refreshDocuments(activeTab), 120);
+    if (!api.isDesktop || data?.settings.receiveBetaUpdates === undefined) return;
+    void checkForUpdates(false);
+  }, [checkForUpdates, data?.settings.receiveBetaUpdates]);
+
+  useLayoutEffect(() => {
+    documentRequestIdRef.current += 1;
+    const locationChanged = documentLocationRef.current !== documentLocationKey;
+    documentLocationRef.current = documentLocationKey;
+    if (activeTab.view !== "files") {
+      setDocumentsLoading(false);
+      return;
+    }
+    setDocumentsLoading(true);
+    if (locationChanged) {
+      const cached = data ? cachedDocumentsForTab(activeTab, data, searchTagIds) : null;
+      setDocuments(cached ?? []);
+      setSelectedIds(new Set());
+    }
+  }, [documentLocationKey, documentQueryKey, data]);
+
+  useEffect(() => {
+    if (!data || activeTab.view !== "files") return;
+    const delay = activeTab.query.trim() || searchTagIds.length ? 120 : 0;
+    const timer = window.setTimeout(() => void refreshDocuments(activeTab), delay);
     return () => window.clearTimeout(timer);
   }, [activeTab, data, refreshDocuments]);
 
@@ -702,11 +738,15 @@ export default function App() {
     });
   }
 
-  async function savePreferences(deleteMode: DeleteMode, tagDisplayLimit: number) {
+  async function savePreferences(deleteMode: DeleteMode, tagDisplayLimit: number, receiveBetaUpdates: boolean) {
     await runAction(async () => {
-      await api.updatePreferences(deleteMode, tagDisplayLimit);
+      const betaChannelChanged = receiveBetaUpdatesRef.current !== receiveBetaUpdates;
+      await api.updatePreferences(deleteMode, tagDisplayLimit, receiveBetaUpdates);
       await refreshBootstrap();
-      setSettingsNotice("文件管理设置已保存");
+      if (betaChannelChanged) {
+        setUpdateUi({ phase: "idle", message: receiveBetaUpdates ? "已切换到测试版通道，请检查更新" : "已切换到正式版通道，请检查更新" });
+      }
+      setSettingsNotice(betaChannelChanged ? "更新通道已保存" : "设置已保存");
     });
   }
 
@@ -796,33 +836,30 @@ export default function App() {
     setDialog({
       kind: "confirm", tone: "danger", title: `删除“${node.name}”？`, description: copy.description, confirmLabel: copy.confirmLabel,
       onConfirm: () => void runAction(async () => {
+        await api.deleteNode(node.id);
+        setSelectedIds(new Set());
+        setPreview(null);
         try {
-          await api.deleteNode(node.id);
-        } finally {
-          setSelectedIds(new Set());
-          setPreview(null);
-          try {
-            const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
-            setTabs((current) => current.map((tab) => {
-              const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
-              const tabPointsToRemovedNode = Boolean(tab.nodeId && removedNodeIds.has(tab.nodeId));
-              if (!tabPointsToRemovedNode) return { ...tab, history };
-              return fallbackNode
-                ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
-                : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
-            }));
-            await refreshBootstrap();
-            if (browsingRemovedNode && fallbackNode) {
-              const next = await api.search("", fallbackNode.id, null, false);
-              setDocuments(next.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) })));
-            } else if (browsingRemovedNode) {
-              setDocuments([]);
-            } else {
-              await refreshDocuments(activeTab);
-            }
-          } catch (refreshReason) {
-            console.info("EazyLedger node deletion refresh failed", refreshReason);
+          const browsingRemovedNode = Boolean(activeTab.nodeId && removedNodeIds.has(activeTab.nodeId));
+          setTabs((current) => current.map((tab) => {
+            const history = tab.history.filter((entry) => !entry.nodeId || !removedNodeIds.has(entry.nodeId));
+            const tabPointsToRemovedNode = Boolean(tab.nodeId && removedNodeIds.has(tab.nodeId));
+            if (!tabPointsToRemovedNode) return { ...tab, history };
+            return fallbackNode
+              ? { ...tab, title: fallbackNode.name, view: "files", nodeId: fallbackNode.id, tagId: null, query: "", includeDescendants: false, history }
+              : { ...tab, title: "主页", view: "home", nodeId: null, tagId: null, query: "", includeDescendants: false, history };
+          }));
+          await refreshBootstrap();
+          if (browsingRemovedNode && fallbackNode) {
+            const next = await api.search("", fallbackNode.id, null, false);
+            setDocuments(next.map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) })));
+          } else if (browsingRemovedNode) {
+            setDocuments([]);
+          } else {
+            await refreshDocuments(activeTab);
           }
+        } catch (refreshReason) {
+          console.info("EazyLedger node deletion refresh failed", refreshReason);
         }
       }),
     });
@@ -1046,7 +1083,7 @@ export default function App() {
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
-          {!documents.length && !visibleChildNodes.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
+          {!documents.length && !visibleChildNodes.length && !loading && !documentsLoading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
         <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : activeTab.includeDescendants ? "（递归范围）" : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
       </section>
@@ -1071,7 +1108,7 @@ export default function App() {
       </div>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div>
       <footer>最多保留最近 200 条记录 · 已删除资料的通知会自动清理</footer>
     </aside></>}
-    {loading && <div className="progress-line" />}
+    {(loading || documentsLoading) && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
   </main>;
 }
@@ -1249,13 +1286,13 @@ function TrashCenter({ items, path, onClose, onReveal, onRestore, onDelete, onEm
   </aside></>;
 }
 
-function SettingsView({ vaultPath, settings, previewOpen, notice, appVersion, updateUi, onPreviewChange, onCheckUpdate, onInstallUpdate, onRevealVault, onBackup, onSavePreferences, onRevealTrash, onChangeTrash, onOpenTrash, onRequestEmptyVault, onChangeVault }: { vaultPath: string; settings: BootstrapData["settings"]; previewOpen: boolean; notice: string | null; appVersion: string; updateUi: UpdateUiState; onPreviewChange: (value: boolean) => void; onCheckUpdate: () => Promise<void>; onInstallUpdate: () => Promise<void>; onRevealVault: () => Promise<void>; onBackup: () => Promise<void>; onSavePreferences: (mode: DeleteMode, limit: number) => Promise<void>; onRevealTrash: () => Promise<void>; onChangeTrash: () => Promise<void>; onOpenTrash: () => void; onRequestEmptyVault: () => void; onChangeVault: () => Promise<void> }) {
+function SettingsView({ vaultPath, settings, previewOpen, notice, appVersion, updateUi, onPreviewChange, onCheckUpdate, onInstallUpdate, onRevealVault, onBackup, onSavePreferences, onRevealTrash, onChangeTrash, onOpenTrash, onRequestEmptyVault, onChangeVault }: { vaultPath: string; settings: BootstrapData["settings"]; previewOpen: boolean; notice: string | null; appVersion: string; updateUi: UpdateUiState; onPreviewChange: (value: boolean) => void; onCheckUpdate: () => Promise<void>; onInstallUpdate: () => Promise<void>; onRevealVault: () => Promise<void>; onBackup: () => Promise<void>; onSavePreferences: (mode: DeleteMode, limit: number, receiveBetaUpdates: boolean) => Promise<void>; onRevealTrash: () => Promise<void>; onChangeTrash: () => Promise<void>; onOpenTrash: () => void; onRequestEmptyVault: () => void; onChangeVault: () => Promise<void> }) {
   return <section className="settings-view custom-scrollbar"><div className="settings-heading"><Settings size={28} /><div><h1>设置</h1><p>调整资料库、界面和文件管理行为</p></div></div>
     {notice && <div className="settings-notice"><Check size={18} /><span>{notice}</span></div>}
     <section className="settings-group"><header><Database size={19} /><div><h2>资料库存放位置</h2><p>数据库、导入副本和预览缓存</p></div></header><div className="setting-row vertical"><div><strong>当前资料库</strong><code title={vaultPath}>{vaultPath}</code></div><div className="setting-actions"><button onClick={() => void onRevealVault()}><FolderOpen size={14} />打开资料库文件夹</button><button className="secondary" onClick={() => void onBackup()}><Archive size={14} />创建完整备份</button><button className="secondary" onClick={() => void onChangeVault()}>迁移到新位置</button><button className="secondary" onClick={onRequestEmptyVault}>使用空资料库</button></div><small>切换会在重启应用后生效；旧资料库不会自动删除。</small></div></section>
-    <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label><label className="setting-row"><div><strong>每行显示标签数</strong><small>超出上限的标签折叠为“+N”，文件名始终优先显示</small></div><select value={settings.tagDisplayLimit} onChange={(event) => void onSavePreferences(settings.deleteMode, Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option value={index + 1} key={index + 1}>{index + 1} 个</option>)}</select></label></section>
-    <section className="settings-group"><header><Files size={19} /><div><h2>文件管理</h2><p>选择删除行为并管理应用回收站</p></div></header><label className="setting-row"><div><strong>删除方式</strong><small>{settings.deleteMode === "app" ? "可在 EazyLedger 内恢复，默认且最安全" : settings.deleteMode === "system" ? "交由 Windows 回收站管理" : "立即物理删除，无法恢复"}</small></div><select value={settings.deleteMode} onChange={(event) => void onSavePreferences(event.target.value as DeleteMode, settings.tagDisplayLimit)}><option value="app">应用回收站（推荐）</option><option value="system">系统回收站</option><option value="permanent">直接永久删除</option></select></label><div className="setting-row vertical"><div><strong>应用回收站位置</strong><code title={settings.trashPath}>{settings.trashPath}</code></div><div className="setting-actions"><button onClick={onOpenTrash}><Trash2 size={14} />查看回收站（{settings.trashCount}）</button><button className="secondary" onClick={() => void onRevealTrash()}><FolderOpen size={14} />打开文件夹</button><button className="secondary" onClick={() => void onChangeTrash()}>更改位置</button></div><small>默认位于资料库的 database/trash；更改位置时会迁移现有回收站内容。</small></div><div className="setting-row"><div><strong>从资源管理器粘贴</strong><small>复制文件或文件夹后，在文件视图按 Ctrl+V 即可导入</small></div><span className="setting-value">已启用</span></div></section>
-    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>应用启动后会自动检查一次，也可以随时手动检查</small></div><div className={`update-status ${updateUi.phase}`}><span className="update-status-icon">{updateUi.phase === "checking" || updateUi.phase === "downloading" ? <RefreshCw className="spinning" size={17} /> : updateUi.phase === "available" ? <Download size={17} /> : updateUi.phase === "current" ? <Check size={17} /> : updateUi.phase === "error" ? <AlertTriangle size={17} /> : <Info size={17} />}</span><div className="update-status-copy"><strong>{updateUi.phase === "checking" ? "正在检查更新" : updateUi.phase === "available" ? `发现 v${updateUi.info?.version ?? ""}` : updateUi.phase === "downloading" ? "正在安装更新" : updateUi.phase === "current" ? "当前已是最新版本" : updateUi.phase === "error" ? updateUi.failure?.title ?? "检查更新失败" : "尚未检查"}</strong><small>{updateUi.message ?? (updateUi.phase === "idle" ? "点击下方按钮连接 GitHub 更新服务" : "")}</small>{updateUi.failure?.detail && <details><summary>查看技术信息</summary><code>{updateUi.failure.detail}</code></details>}</div></div><div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />检查更新</button>{updateUi.phase === "available" && <button className="primary" onClick={() => void onInstallUpdate()}><Download size={14} />下载、安装并重启</button>}</div></div></section>
+    <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label><label className="setting-row"><div><strong>每行显示标签数</strong><small>超出上限的标签折叠为“+N”，文件名始终优先显示</small></div><select value={settings.tagDisplayLimit} onChange={(event) => void onSavePreferences(settings.deleteMode, Number(event.target.value), settings.receiveBetaUpdates)}>{Array.from({ length: 10 }, (_, index) => <option value={index + 1} key={index + 1}>{index + 1} 个</option>)}</select></label></section>
+    <section className="settings-group"><header><Files size={19} /><div><h2>文件管理</h2><p>选择删除行为并管理应用回收站</p></div></header><label className="setting-row"><div><strong>删除方式</strong><small>{settings.deleteMode === "app" ? "可在 EazyLedger 内恢复，默认且最安全" : settings.deleteMode === "system" ? "交由 Windows 回收站管理" : "立即物理删除，无法恢复"}</small></div><select value={settings.deleteMode} onChange={(event) => void onSavePreferences(event.target.value as DeleteMode, settings.tagDisplayLimit, settings.receiveBetaUpdates)}><option value="app">应用回收站（推荐）</option><option value="system">系统回收站</option><option value="permanent">直接永久删除</option></select></label><div className="setting-row vertical"><div><strong>应用回收站位置</strong><code title={settings.trashPath}>{settings.trashPath}</code></div><div className="setting-actions"><button onClick={onOpenTrash}><Trash2 size={14} />查看回收站（{settings.trashCount}）</button><button className="secondary" onClick={() => void onRevealTrash()}><FolderOpen size={14} />打开文件夹</button><button className="secondary" onClick={() => void onChangeTrash()}>更改位置</button></div><small>默认位于资料库的 database/trash；更改位置时会迁移现有回收站内容。</small></div><div className="setting-row"><div><strong>从资源管理器粘贴</strong><small>复制文件或文件夹后，在文件视图按 Ctrl+V 即可导入</small></div><span className="setting-value">已启用</span></div></section>
+    <section className="settings-group"><header><Download size={19} /><div><h2>软件更新</h2><p>从官方 GitHub Release 下载经过签名验证的安装包</p></div></header><label className="setting-row"><div><strong>接收测试版</strong><small>提前体验预览功能；Beta 可能不稳定，关闭后仅接收正式版</small></div><input type="checkbox" checked={settings.receiveBetaUpdates} onChange={(event) => void onSavePreferences(settings.deleteMode, settings.tagDisplayLimit, event.target.checked)} /></label><div className="setting-row vertical"><div><strong>当前版本 v{appVersion}</strong><small>当前更新通道：{settings.receiveBetaUpdates ? "测试版与正式版" : "仅正式版"}；应用启动后会自动检查一次</small></div><div className={`update-status ${updateUi.phase}`}><span className="update-status-icon">{updateUi.phase === "checking" || updateUi.phase === "downloading" ? <RefreshCw className="spinning" size={17} /> : updateUi.phase === "available" ? <Download size={17} /> : updateUi.phase === "current" ? <Check size={17} /> : updateUi.phase === "error" ? <AlertTriangle size={17} /> : <Info size={17} />}</span><div className="update-status-copy"><strong>{updateUi.phase === "checking" ? "正在检查更新" : updateUi.phase === "available" ? `发现${updateUi.info?.channel === "beta" ? "测试版" : "正式版"} v${updateUi.info?.version ?? ""}` : updateUi.phase === "downloading" ? "正在安装更新" : updateUi.phase === "current" ? "当前已是最新版本" : updateUi.phase === "error" ? updateUi.failure?.title ?? "检查更新失败" : "尚未检查"}</strong><small>{updateUi.message ?? (updateUi.phase === "idle" ? "点击下方按钮连接 GitHub 更新服务" : "")}</small>{updateUi.failure?.detail && <details><summary>查看技术信息</summary><code>{updateUi.failure.detail}</code></details>}</div></div><div className="setting-actions"><button disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onClick={() => void onCheckUpdate()}><RefreshCw size={14} />检查更新</button>{updateUi.phase === "available" && <button className="primary" onClick={() => void onInstallUpdate()}><Download size={14} />下载、安装并重启</button>}</div></div></section>
   </section>;
 }
 
@@ -1309,7 +1346,7 @@ function TreeNode({ node, nodes, selectedId, pointerDrag, dropTarget, onSelect, 
     <div data-ledger-node-id={node.id} className={`tree-row ${selectedId === node.id ? "selected" : ""} ${isDraggedNode ? "node-dragging" : ""} ${isDropTarget ? `drop-target ${pointerDrag?.kind === "node" ? "node" : "files"}-target drop-${dropTarget?.position}` : ""}`} style={{ paddingLeft: 8 + depth * 16 }}
       onClick={() => onSelect(node)}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu({ x: event.clientX, y: event.clientY, node }); }}>
-      <button className="tree-toggle" title={children.length ? (open ? "收起子节点" : "展开子节点") : "没有子节点"} aria-label={children.length ? (open ? `收起 ${node.name}` : `展开 ${node.name}`) : undefined} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{children.length ? (open ? <ChevronDown size={15} /> : <ChevronRight size={15} />) : <span />}</button>
+      {children.length ? <button className="tree-toggle" title={open ? "收起子节点" : "展开子节点"} aria-label={open ? `收起 ${node.name}` : `展开 ${node.name}`} onClick={(event) => { event.stopPropagation(); setOpen((value) => !value); }}>{open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button> : <span className="tree-toggle tree-toggle-placeholder" aria-hidden="true" />}
       {node.id === "root" ? <span className="drag-handle-spacer" /> : <button className="node-drag-handle" title={`拖动“${node.name}”调整层级或顺序`} aria-label={`拖动节点 ${node.name}`} onPointerDown={(event) => onNodePointerDown(event, node)} onClick={(event) => event.stopPropagation()}><GripVertical size={13} /></button>}
       {open && children.length ? <FolderOpen size={16} /> : <Folder size={16} />}<span>{node.name}</span><small>{node.documentCount}</small><span className="node-drag-hint">{node.id === "root" ? "右键管理" : "拖拽调整 · 右键管理"}</span>
     </div>
@@ -1441,6 +1478,17 @@ function breadcrumbFor(nodeId: string | null, nodes: NodeItem[]) { if (!nodeId) 
 function nodePath(nodeId: string, nodes: NodeItem[]) { return breadcrumbFor(nodeId, nodes).map((node) => node.name).join(" / "); }
 function nodeDepth(node: NodeItem, nodes: NodeItem[]) { let depth = 0; let current = node; while (current.parentId) { depth += 1; const parent = nodes.find((candidate) => candidate.id === current.parentId); if (!parent) break; current = parent; } return depth; }
 function descendantNodeIds(nodeId: string, nodes: NodeItem[]) { const ids: string[] = []; const visit = (id: string) => nodes.filter((node) => node.parentId === id).forEach((child) => { ids.push(child.id); visit(child.id); }); visit(nodeId); return ids; }
+function cachedDocumentsForTab(tab: AppTab, data: BootstrapData, searchTagIds: string[]): DocumentItem[] | null {
+  if (tab.view !== "files" || tab.query.trim()) return null;
+  const nodeIds = tab.nodeId
+    ? new Set(tab.includeDescendants ? [tab.nodeId, ...descendantNodeIds(tab.nodeId, data.nodes)] : [tab.nodeId])
+    : null;
+  return data.documents
+    .filter((document) => !nodeIds || nodeIds.has(document.nodeId))
+    .filter((document) => !tab.tagId || document.tags.some((tag) => tag.id === tab.tagId))
+    .filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId)))
+    .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
+}
 function nodeOrderKey(parentId: string | null) { return parentId ?? "__root__"; }
 function readNodeOrder(): Record<string, string[]> {
   try { return JSON.parse(localStorage.getItem("document-ledger.node-order") ?? "{}"); }
