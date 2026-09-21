@@ -802,7 +802,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 6px;
   color: #667486;
 }
-.tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
+.tree-toggle-placeholder { pointer-events: none; }
+button.tree-toggle:hover:not(:disabled) { color: #075a9d; background: #dcecf9; box-shadow: inset 0 0 0 1px #b9d4eb; }
 .tree-toggle:focus-visible { outline-offset: 0; background: #dcecf9; }
 .tree-toggle:disabled { color: #b6bec8; }
 .node-drag-handle, .drag-handle {
