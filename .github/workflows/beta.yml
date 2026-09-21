@@ -29,7 +29,7 @@ jobs:
       - name: 检出指定版本
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: 安装 Node.js
