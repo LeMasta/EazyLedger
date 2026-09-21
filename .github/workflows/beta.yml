@@ -50,10 +50,13 @@ jobs:
             echo "::error::package.json、package-lock.json、tauri.conf.json 与 Cargo.toml 的版本号不一致"
             exit 1
           fi
-          if [[ "$VERSION" != *-* ]]; then
-            echo "::error::Beta 版本号必须包含预发布标识，例如 0.7.0-beta.1"
-            exit 1
-          fi
+          case "$VERSION" in
+            *-*) ;;
+            *)
+              echo "::error::Beta 版本号必须包含预发布标识，例如 0.7.0-beta.1"
+              exit 1
+              ;;
+          esac
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             echo "::error::标签 v$VERSION 已存在；Beta 构建不可覆盖，请提升预发布序号"
             exit 1
