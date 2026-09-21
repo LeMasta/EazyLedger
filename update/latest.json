@@ -1,15 +1,15 @@
 {
-  "version": "0.7.0-beta.2",
+  "version": "0.7.0-beta.3",
   "notes": "EazyLedger Windows Beta 测试版，用于提前体验和快速反馈。\n\n测试版可能存在未发现的问题，安装前建议先在“设置”中创建完整备份。可直接运行 EXE 覆盖安装，也可在开启“接收测试版”后通过应用内更新安装。",
-  "pub_date": "2026-09-20T08:34:50.775Z",
+  "pub_date": "2026-09-21T02:09:05.518Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMnZQVGpFMHlxbzhBTFlQWXBBWkw4aHhNQU83bG5OZUtFLzdNUFhWOGNTd0NPOWFCSmpEbGc3bEw5b2ZzVGM1bWFzd1MzSk45c214SUpoMURqYkZsSVFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODkzMjg3CWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjJfeDY0LXNldHVwLmV4ZQpxVUFlaDIxYldubnprbnZXYnJiNEo4LzJ2WUhPTVBpNmp0RDh2U2JBeFQrbzZWREYybU1jV0FyZHZ1d2hQdTQ0TGdNTmEzNkc5VktHLzQ0R09hSXdBQT09Cg==",
-      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/576447317"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMmxzcHFmOUMzTWwwdWJHenZFclUzWXo1eWdvMzQ0Y1lEalo2YkNLMnUyN1VXVXRxdE52bnhTaU9HU2RrendaczVTK1dDSHIvSDZBU2orZEVoWitoSWdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTU2NTQzCWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjNfeDY0LXNldHVwLmV4ZQp3Mjk3ME5WZ0ZkZWlLcmlyelhsWGRiKy9FRUFzOUlvT2IzMTNLcitQRTRjeERrU004MnFuTk1tTkVZdUZ2eHREQm1uZnZja1JTZ3RpS3A4a0NPQWxDUT09Cg==",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/578010763"
     },
     "windows-x86_64-nsis": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMnZQVGpFMHlxbzhBTFlQWXBBWkw4aHhNQU83bG5OZUtFLzdNUFhWOGNTd0NPOWFCSmpEbGc3bEw5b2ZzVGM1bWFzd1MzSk45c214SUpoMURqYkZsSVFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODkzMjg3CWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjJfeDY0LXNldHVwLmV4ZQpxVUFlaDIxYldubnprbnZXYnJiNEo4LzJ2WUhPTVBpNmp0RDh2U2JBeFQrbzZWREYybU1jV0FyZHZ1d2hQdTQ0TGdNTmEzNkc5VktHLzQ0R09hSXdBQT09Cg==",
-      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/576447317"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRzA0eks0OURkMmxzcHFmOUMzTWwwdWJHenZFclUzWXo1eWdvMzQ0Y1lEalo2YkNLMnUyN1VXVXRxdE52bnhTaU9HU2RrendaczVTK1dDSHIvSDZBU2orZEVoWitoSWdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTU2NTQzCWZpbGU6RWF6eUxlZGdlcl8wLjcuMC1iZXRhLjNfeDY0LXNldHVwLmV4ZQp3Mjk3ME5WZ0ZkZWlLcmlyelhsWGRiKy9FRUFzOUlvT2IzMTNLcitQRTRjeERrU004MnFuTk1tTkVZdUZ2eHREQm1uZnZja1JTZ3RpS3A4a0NPQWxDUT09Cg==",
+      "url": "https://api.github.com/repos/LeMasta/EazyLedger/releases/assets/578010763"
     }
   }
 }
