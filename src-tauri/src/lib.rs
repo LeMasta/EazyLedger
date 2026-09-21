@@ -6,8 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    fs,
+    env, fs,
     io::Read,
     path::{Path, PathBuf},
     process::Command,
@@ -29,7 +28,9 @@ const BETA_UPDATE_ENDPOINT: &str =
     "https://raw.githubusercontent.com/LeMasta/EazyLedger/beta-channel/update/latest.json";
 
 fn is_ignored_system_entry(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|value| value.to_str()) else { return false; };
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
     let lower = name.to_lowercase();
     matches!(
         lower.as_str(),
@@ -206,10 +207,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(WatcherState(Mutex::new(None)))
         .setup(|app| {
-            let app_data_path = app
-                .path()
-                .app_data_dir()
-                ?;
+            let app_data_path = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_path)?;
             let config_path = app_data_path.join("settings.json");
             let default_vault_path = app_data_path.join("vault");
@@ -218,12 +216,14 @@ pub fn run() {
             initialize_vault(&vault_path).map_err(std::io::Error::other)?;
             let trash_path = resolved_trash_path(&config, &vault_path);
             fs::create_dir_all(&trash_path)?;
-            migrate_legacy_trash_directory(&vault_path, &trash_path).map_err(std::io::Error::other)?;
+            migrate_legacy_trash_directory(&vault_path, &trash_path)
+                .map_err(std::io::Error::other)?;
             index_legacy_trash(&vault_path, &trash_path).map_err(std::io::Error::other)?;
             app.asset_protocol_scope()
                 .allow_directory(&vault_path, true)
                 .map_err(std::io::Error::other)?;
-            let watcher = start_watcher(vault_path.clone(), app.handle().clone()).map_err(std::io::Error::other)?;
+            let watcher = start_watcher(vault_path.clone(), app.handle().clone())
+                .map_err(std::io::Error::other)?;
             app.manage(AppState {
                 vault_path,
                 config_path,
@@ -231,7 +231,10 @@ pub fn run() {
                 preview_conversion_lock: Arc::new(Mutex::new(())),
             });
             let watcher_state = app.state::<WatcherState>();
-            *watcher_state.0.lock().map_err(|_| std::io::Error::other("监视器锁异常"))? = Some(watcher);
+            *watcher_state
+                .0
+                .lock()
+                .map_err(|_| std::io::Error::other("监视器锁异常"))? = Some(watcher);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -308,7 +311,11 @@ fn default_trash_path(vault_path: &Path) -> PathBuf {
 }
 
 fn resolved_trash_path(config: &AppConfig, vault_path: &Path) -> PathBuf {
-    if config.trash_path.trim().is_empty() { default_trash_path(vault_path) } else { PathBuf::from(&config.trash_path) }
+    if config.trash_path.trim().is_empty() {
+        default_trash_path(vault_path)
+    } else {
+        PathBuf::from(&config.trash_path)
+    }
 }
 
 fn load_app_settings(state: &AppState) -> Result<AppSettings, String> {
@@ -333,7 +340,8 @@ fn db_path(vault_path: &Path) -> PathBuf {
 
 fn open_db(vault_path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(db_path(vault_path)).map_err(|error| error.to_string())?;
-    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")
+    connection
+        .execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")
         .map_err(|error| error.to_string())?;
     Ok(connection)
 }
@@ -346,8 +354,9 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
     fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
     migrate_legacy_trash_directory(vault_path, &trash_path)?;
     let connection = open_db(vault_path)?;
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS nodes (
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS nodes (
             id TEXT PRIMARY KEY,
             parent_id TEXT REFERENCES nodes(id),
             name TEXT NOT NULL,
@@ -393,35 +402,53 @@ fn initialize_vault(vault_path: &Path) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_documents_node ON documents(node_id);
         CREATE INDEX IF NOT EXISTS idx_documents_name ON documents(display_name);
-        CREATE INDEX IF NOT EXISTS idx_documents_modified ON documents(modified_at DESC);"
-    ).map_err(|error| error.to_string())?;
+        CREATE INDEX IF NOT EXISTS idx_documents_modified ON documents(modified_at DESC);",
+        )
+        .map_err(|error| error.to_string())?;
     ensure_document_expiry_column(&connection)?;
     ensure_document_starred_column(&connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO nodes(id, parent_id, name, sort_order, created_at) VALUES(?1, NULL, '全部资料', 0, ?2)",
         params![ROOT_NODE_ID, now_ms()],
     ).map_err(|error| error.to_string())?;
+    reorganize_all_documents(&connection, vault_path)?;
     Ok(())
 }
 
 fn document_columns(connection: &Connection) -> Result<Vec<String>, String> {
-    let mut statement = connection.prepare("PRAGMA table_info(documents)").map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare("PRAGMA table_info(documents)")
+        .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 fn ensure_document_expiry_column(connection: &Connection) -> Result<(), String> {
-    if !document_columns(connection)?.iter().any(|column| column == "expires_at") {
-        connection.execute("ALTER TABLE documents ADD COLUMN expires_at INTEGER", []).map_err(|error| error.to_string())?;
+    if !document_columns(connection)?
+        .iter()
+        .any(|column| column == "expires_at")
+    {
+        connection
+            .execute("ALTER TABLE documents ADD COLUMN expires_at INTEGER", [])
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 
 fn ensure_document_starred_column(connection: &Connection) -> Result<(), String> {
-    if !document_columns(connection)?.iter().any(|column| column == "starred") {
-        connection.execute("ALTER TABLE documents ADD COLUMN starred INTEGER NOT NULL DEFAULT 0", []).map_err(|error| error.to_string())?;
+    if !document_columns(connection)?
+        .iter()
+        .any(|column| column == "starred")
+    {
+        connection
+            .execute(
+                "ALTER TABLE documents ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -453,7 +480,11 @@ fn search_documents(
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
     let scoped_node_ids = node_id.as_ref().map(|id| {
-        if include_descendants { descendant_ids(id, &nodes) } else { HashSet::from([id.clone()]) }
+        if include_descendants {
+            descendant_ids(id, &nodes)
+        } else {
+            HashSet::from([id.clone()])
+        }
     });
     let terms: Vec<String> = query
         .split_whitespace()
@@ -476,15 +507,25 @@ fn search_documents(
             return true;
         }
         let content: String = connection
-            .query_row("SELECT content_text FROM documents WHERE id=?1", [&document.id], |row| row.get(0))
+            .query_row(
+                "SELECT content_text FROM documents WHERE id=?1",
+                [&document.id],
+                |row| row.get(0),
+            )
             .unwrap_or_default();
         let haystack = format!(
             "{} {} {} {}",
             document.name,
             document.notes,
             content,
-            document.tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>().join(" ")
-        ).to_lowercase();
+            document
+                .tags
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+        .to_lowercase();
         terms.iter().all(|term| haystack.contains(term))
     });
     Ok(documents)
@@ -510,7 +551,10 @@ fn normalize_import_paths(paths: Vec<String>, vault: &Path) -> Vec<PathBuf> {
     normalized.sort_by_key(|path| path.components().count());
     let mut roots: Vec<PathBuf> = Vec::new();
     for path in normalized {
-        if roots.iter().any(|root| root.is_dir() && path.starts_with(root)) {
+        if roots
+            .iter()
+            .any(|root| root.is_dir() && path.starts_with(root))
+        {
             continue;
         }
         roots.push(path);
@@ -527,7 +571,11 @@ fn import_paths(
 ) -> Result<Vec<DocumentItem>, String> {
     let connection = open_db(&state.vault_path)?;
     let node_exists: bool = connection
-        .query_row("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)", [&node_id], |row| row.get(0))
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)",
+            [&node_id],
+            |row| row.get(0),
+        )
         .map_err(|error| error.to_string())?;
     if !node_exists {
         return Err("目标台账节点不存在".into());
@@ -547,14 +595,18 @@ fn import_paths(
 #[tauri::command]
 fn document_paths(ids: Vec<String>, state: State<AppState>) -> Result<Vec<String>, String> {
     ids.into_iter()
-        .map(|id| document_path(&id, &state.vault_path).map(|path| path.to_string_lossy().to_string()))
+        .map(|id| {
+            document_path(&id, &state.vault_path).map(|path| path.to_string_lossy().to_string())
+        })
         .collect()
 }
 
 #[tauri::command]
 fn copy_documents_to_clipboard(ids: Vec<String>, state: State<AppState>) -> Result<usize, String> {
     let paths = document_paths(ids, state)?;
-    if paths.is_empty() { return Ok(0); }
+    if paths.is_empty() {
+        return Ok(0);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -589,13 +641,23 @@ fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usi
     #[cfg(not(target_os = "windows"))]
     let paths: Vec<String> = Vec::new();
 
-    if paths.is_empty() { return Ok(0); }
+    if paths.is_empty() {
+        return Ok(0);
+    }
     let connection = open_db(&state.vault_path)?;
     let node_exists: bool = connection
-        .query_row("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)", [&node_id], |row| row.get(0))
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)",
+            [&node_id],
+            |row| row.get(0),
+        )
         .map_err(|error| error.to_string())?;
-    if !node_exists { return Err("目标台账节点不存在".into()); }
-    let before: i64 = connection.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    if !node_exists {
+        return Err("目标台账节点不存在".into());
+    }
+    let before: i64 = connection
+        .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
     for path in normalize_import_paths(paths, &state.vault_path) {
         if path.is_dir() {
             import_directory_tree(&connection, &state.vault_path, &path, &node_id, "copy")?;
@@ -603,7 +665,9 @@ fn import_clipboard_files(node_id: String, state: State<AppState>) -> Result<usi
             import_one(&connection, &state.vault_path, &path, &node_id, "copy")?;
         }
     }
-    let after: i64 = connection.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    let after: i64 = connection
+        .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
     Ok((after - before).max(0) as usize)
 }
 
@@ -648,8 +712,17 @@ fn import_directory_tree(
     Ok(())
 }
 
-fn insert_child_node(connection: &Connection, parent_id: &str, requested_name: &str, unique: bool) -> Result<String, String> {
-    let name = if unique { unique_node_name(connection, parent_id, requested_name)? } else { requested_name.to_string() };
+fn insert_child_node(
+    connection: &Connection,
+    parent_id: &str,
+    requested_name: &str,
+    unique: bool,
+) -> Result<String, String> {
+    let name = if unique {
+        unique_node_name(connection, parent_id, requested_name)?
+    } else {
+        requested_name.to_string()
+    };
     let id = Uuid::new_v4().to_string();
     connection.execute(
         "INSERT INTO nodes(id, parent_id, name, sort_order, created_at) VALUES(?1, ?2, ?3, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM nodes WHERE parent_id=?2), ?4)",
@@ -658,29 +731,260 @@ fn insert_child_node(connection: &Connection, parent_id: &str, requested_name: &
     Ok(id)
 }
 
-fn unique_node_name(connection: &Connection, parent_id: &str, requested_name: &str) -> Result<String, String> {
-    let exists = |name: &str| -> Result<bool, String> {
-        connection.query_row(
+fn unique_node_name(
+    connection: &Connection,
+    parent_id: &str,
+    requested_name: &str,
+) -> Result<String, String> {
+    let exists =
+        |name: &str| -> Result<bool, String> {
+            connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM nodes WHERE parent_id=?1 AND name=?2 COLLATE NOCASE)",
             params![parent_id, name],
             |row| row.get(0),
         ).map_err(|error| error.to_string())
-    };
-    if !exists(requested_name)? { return Ok(requested_name.to_string()); }
+        };
+    if !exists(requested_name)? {
+        return Ok(requested_name.to_string());
+    }
     for index in 2..10_000 {
         let candidate = format!("{} ({})", requested_name, index);
-        if !exists(&candidate)? { return Ok(candidate); }
+        if !exists(&candidate)? {
+            return Ok(candidate);
+        }
     }
     Err("无法生成唯一节点名称".into())
 }
 
-fn import_one(connection: &Connection, vault: &Path, source: &Path, node_id: &str, mode: &str) -> Result<(), String> {
+fn storage_id_suffix(id: &str) -> String {
+    id.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(8)
+        .collect()
+}
+
+fn safe_storage_segment(value: &str, fallback: &str) -> String {
+    let mut segment: String = value
+        .chars()
+        .map(|character| {
+            if character.is_control() || "<>:\"/\\|?*".contains(character) {
+                '_'
+            } else {
+                character
+            }
+        })
+        .take(64)
+        .collect();
+    segment = segment.trim().trim_end_matches([' ', '.']).to_string();
+    if segment.is_empty() {
+        segment = fallback.to_string();
+    }
+    let stem = segment
+        .split('.')
+        .next()
+        .unwrap_or(&segment)
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        segment.push('_');
+    }
+    segment
+}
+
+fn node_storage_directory(
+    connection: &Connection,
+    vault: &Path,
+    node_id: &str,
+) -> Result<PathBuf, String> {
+    let mut current = node_id.to_string();
+    let mut segments = Vec::new();
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current.clone()) {
+            return Err("台账节点层级存在循环".into());
+        }
+        let (parent_id, name): (Option<String>, String) = connection
+            .query_row(
+                "SELECT parent_id, name FROM nodes WHERE id=?1",
+                [&current],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| format!("无法读取台账节点：{error}"))?;
+        let safe_name = safe_storage_segment(&name, "未命名节点");
+        segments.push(if current == ROOT_NODE_ID {
+            safe_name
+        } else {
+            format!("{} [{}]", safe_name, storage_id_suffix(&current))
+        });
+        let Some(parent_id) = parent_id else {
+            break;
+        };
+        current = parent_id;
+    }
+    let mut directory = vault.join("files");
+    for segment in segments.into_iter().rev() {
+        directory.push(segment);
+    }
+    Ok(directory)
+}
+
+fn document_storage_directory(
+    connection: &Connection,
+    vault: &Path,
+    node_id: &str,
+    name: &str,
+    id: &str,
+) -> Result<PathBuf, String> {
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name);
+    Ok(
+        node_storage_directory(connection, vault, node_id)?.join(format!(
+            "{} [{}]",
+            safe_storage_segment(stem, "未命名资料"),
+            storage_id_suffix(id)
+        )),
+    )
+}
+
+fn relocate_document_storage(
+    connection: &Connection,
+    vault: &Path,
+    id: &str,
+    node_id: &str,
+    name: &str,
+    relative_path: &str,
+) -> Result<String, String> {
+    let source_file = vault.join(relative_path);
+    let destination_directory = document_storage_directory(connection, vault, node_id, name, id)?;
+    let destination_file = destination_directory.join(name);
+    if !source_file.exists() {
+        if destination_file.exists() {
+            return destination_file
+                .strip_prefix(vault)
+                .map_err(|error| error.to_string())
+                .map(|path| path.to_string_lossy().replace('\\', "/"));
+        }
+        return Ok(relative_path.to_string());
+    }
+    let source_directory = source_file.parent().ok_or("资料文件路径异常")?;
+    if source_file == destination_file {
+        return Ok(relative_path.to_string());
+    }
+    if source_directory != destination_directory {
+        if destination_directory.exists() {
+            return Err(format!(
+                "目标资料目录已存在：{}",
+                destination_directory.display()
+            ));
+        }
+        move_directory(source_directory, &destination_directory)?;
+    }
+    let moved_file = destination_directory.join(source_file.file_name().ok_or("资料文件名异常")?);
+    if moved_file != destination_file {
+        if destination_file.exists() {
+            return Err(format!(
+                "目标资料文件已存在：{}",
+                destination_file.display()
+            ));
+        }
+        fs::rename(&moved_file, &destination_file).map_err(|error| error.to_string())?;
+    }
+    destination_file
+        .strip_prefix(vault)
+        .map_err(|error| error.to_string())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+fn reorganize_all_documents(connection: &Connection, vault: &Path) -> Result<(), String> {
+    let records = {
+        let mut statement = connection.prepare("SELECT id, node_id, display_name, relative_path FROM documents ORDER BY imported_at")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    for (id, node_id, name, relative_path) in records {
+        let new_relative =
+            relocate_document_storage(connection, vault, &id, &node_id, &name, &relative_path)?;
+        if new_relative != relative_path {
+            connection
+                .execute(
+                    "UPDATE documents SET relative_path=?1 WHERE id=?2",
+                    params![new_relative, id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    remove_empty_storage_directories(&vault.join("files"));
+    Ok(())
+}
+
+fn remove_empty_storage_directories(root: &Path) {
+    let mut directories = WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_dir())
+        .map(|entry| entry.path().to_path_buf())
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        let _ = fs::remove_dir(directory);
+    }
+}
+
+fn import_one(
+    connection: &Connection,
+    vault: &Path,
+    source: &Path,
+    node_id: &str,
+    mode: &str,
+) -> Result<(), String> {
     if is_ignored_system_entry(source) {
         return Ok(());
     }
-    let name = source.file_name().and_then(|value| value.to_str()).ok_or("文件名无法识别")?.to_string();
+    let name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("文件名无法识别")?
+        .to_string();
     let id = Uuid::new_v4().to_string();
-    let directory = vault.join("files").join(&id);
+    let directory = document_storage_directory(connection, vault, node_id, &name, &id)?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let destination = directory.join(&name);
     if mode == "move" {
@@ -692,8 +996,16 @@ fn import_one(connection: &Connection, vault: &Path, source: &Path, node_id: &st
         fs::copy(source, &destination).map_err(|error| error.to_string())?;
     }
     let metadata = fs::metadata(&destination).map_err(|error| error.to_string())?;
-    let relative_path = destination.strip_prefix(vault).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
-    let extension = destination.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
+    let relative_path = destination
+        .strip_prefix(vault)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let modified_at = modified_ms(&metadata);
     let content_text = extract_text(&destination, &extension);
     connection.execute(
@@ -735,29 +1047,50 @@ fn reveal_vault(state: State<AppState>) -> Result<(), String> {
 fn get_preview(id: String, state: State<AppState>) -> Result<Preview, String> {
     let connection = open_db(&state.vault_path)?;
     let record: Option<(String, String, String)> = connection
-        .query_row("SELECT extension, relative_path, content_text FROM documents WHERE id=?1", [&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_row(
+            "SELECT extension, relative_path, content_text FROM documents WHERE id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .optional()
         .map_err(|error| format!("无法读取预览资料：{error}"))?;
     let Some((extension, relative_path, text)) = record else {
-        return Ok(Preview::Unsupported { reason: "资料记录已发生变化，请刷新列表后重试。".into() });
+        return Ok(Preview::Unsupported {
+            reason: "资料记录已发生变化，请刷新列表后重试。".into(),
+        });
     };
-    let path = state.vault_path.join(relative_path).to_string_lossy().to_string();
+    let path = state
+        .vault_path
+        .join(relative_path)
+        .to_string_lossy()
+        .to_string();
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Ok(Preview::Image { path }),
         "pdf" => Ok(Preview::Pdf { path }),
         "docx" => Ok(Preview::Docx { path }),
         "doc" => get_legacy_doc_preview(&id, Path::new(&path), state.inner()),
         "txt" | "md" | "csv" | "json" | "xml" | "log" => Ok(Preview::Text { text }),
-        _ => Ok(Preview::Unsupported { reason: format!("{} 格式暂不支持内置预览，请使用默认程序打开。", extension.to_uppercase()) }),
+        _ => Ok(Preview::Unsupported {
+            reason: format!(
+                "{} 格式暂不支持内置预览，请使用默认程序打开。",
+                extension.to_uppercase()
+            ),
+        }),
     }
 }
-
 
 #[tauri::command]
 fn read_preview_image(id: String, state: State<AppState>) -> Result<tauri::ipc::Response, String> {
     let path = document_path(&id, &state.vault_path)?;
-    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_lowercase();
-    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if !matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+    ) {
         return Err("该文件不是受支持的图片格式".into());
     }
     let bytes = fs::read(&path).map_err(|error| format!("无法读取图片：{error}"))?;
@@ -771,7 +1104,9 @@ fn warm_doc_previews(state: State<AppState>) -> Result<usize, String> {
         .prepare("SELECT id, relative_path FROM documents WHERE extension='doc' ORDER BY imported_at DESC LIMIT 32")
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|error| error.to_string())?;
 
     let mut queued = 0;
@@ -794,7 +1129,9 @@ fn warm_doc_previews(state: State<AppState>) -> Result<usize, String> {
 fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<Preview, String> {
     let cached_pdf = legacy_doc_cache_path(id, &state.vault_path);
     if preview_is_fresh(source, &cached_pdf) {
-        return Ok(Preview::Pdf { path: cached_pdf.to_string_lossy().to_string() });
+        return Ok(Preview::Pdf {
+            path: cached_pdf.to_string_lossy().to_string(),
+        });
     }
 
     let existing = state
@@ -806,7 +1143,9 @@ fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<P
 
     match existing {
         Some(PreviewJobState::Running) => {
-            return Ok(Preview::Loading { message: "正在后台生成 DOC 预览…".into() });
+            return Ok(Preview::Loading {
+                message: "正在后台生成 DOC 预览…".into(),
+            });
         }
         Some(PreviewJobState::Failed { reason, failed_at }) => {
             if failed_at.elapsed() < Duration::from_secs(2) {
@@ -830,7 +1169,9 @@ fn get_legacy_doc_preview(id: &str, source: &Path, state: &AppState) -> Result<P
         Arc::clone(&state.preview_jobs),
         Arc::clone(&state.preview_conversion_lock),
     )?;
-    Ok(Preview::Loading { message: "正在后台生成 DOC 预览…".into() })
+    Ok(Preview::Loading {
+        message: "正在后台生成 DOC 预览…".into(),
+    })
 }
 
 fn queue_legacy_doc_preview(
@@ -846,7 +1187,9 @@ fn queue_legacy_doc_preview(
     }
 
     {
-        let mut states = jobs.lock().map_err(|_| "DOC 预览任务状态异常".to_string())?;
+        let mut states = jobs
+            .lock()
+            .map_err(|_| "DOC 预览任务状态异常".to_string())?;
         if states.contains_key(&id) {
             return Ok(false);
         }
@@ -865,7 +1208,13 @@ fn queue_legacy_doc_preview(
                     states.remove(&id);
                 }
                 Err(reason) => {
-                    states.insert(id, PreviewJobState::Failed { reason, failed_at: Instant::now() });
+                    states.insert(
+                        id,
+                        PreviewJobState::Failed {
+                            reason,
+                            failed_at: Instant::now(),
+                        },
+                    );
                 }
             }
         }
@@ -880,30 +1229,56 @@ fn legacy_doc_cache_path(id: &str, vault: &Path) -> PathBuf {
 fn convert_legacy_doc_preview(id: &str, source: &Path, vault: &Path) -> Result<PathBuf, String> {
     let cache_dir = vault.join("preview-cache").join(id);
     let cached_pdf = cache_dir.join("preview.pdf");
-    if preview_is_fresh(source, &cached_pdf) { return Ok(cached_pdf); }
+    if preview_is_fresh(source, &cached_pdf) {
+        return Ok(cached_pdf);
+    }
     fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
 
     let mut candidates = Vec::<PathBuf>::new();
     for variable in ["PROGRAMFILES", "PROGRAMFILES(X86)"] {
         if let Some(directory) = env::var_os(variable) {
-            candidates.push(PathBuf::from(directory).join("LibreOffice").join("program").join("soffice.exe"));
+            candidates.push(
+                PathBuf::from(directory)
+                    .join("LibreOffice")
+                    .join("program")
+                    .join("soffice.exe"),
+            );
         }
     }
     candidates.push(PathBuf::from("soffice"));
     candidates.push(PathBuf::from("libreoffice"));
 
     for executable in candidates {
-        if executable.is_absolute() && !executable.exists() { continue; }
+        if executable.is_absolute() && !executable.exists() {
+            continue;
+        }
         let status = Command::new(&executable)
-            .args(["--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--convert-to", "pdf", "--outdir"])
+            .args([
+                "--headless",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+            ])
             .arg(&cache_dir)
             .arg(source)
             .status();
-        if !matches!(status, Ok(value) if value.success()) { continue; }
+        if !matches!(status, Ok(value) if value.success()) {
+            continue;
+        }
         let generated = cache_dir
-            .join(source.file_stem().and_then(|value| value.to_str()).unwrap_or("document"))
+            .join(
+                source
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("document"),
+            )
             .with_extension("pdf");
-        if !generated.exists() { continue; }
+        if !generated.exists() {
+            continue;
+        }
         if generated != cached_pdf {
             fs::copy(&generated, &cached_pdf).map_err(|error| error.to_string())?;
             let _ = fs::remove_file(generated);
@@ -914,8 +1289,12 @@ fn convert_legacy_doc_preview(id: &str, source: &Path, vault: &Path) -> Result<P
 }
 
 fn preview_is_fresh(source: &Path, preview: &Path) -> bool {
-    let Ok(source_modified) = fs::metadata(source).and_then(|value| value.modified()) else { return false; };
-    let Ok(preview_modified) = fs::metadata(preview).and_then(|value| value.modified()) else { return false; };
+    let Ok(source_modified) = fs::metadata(source).and_then(|value| value.modified()) else {
+        return false;
+    };
+    let Ok(preview_modified) = fs::metadata(preview).and_then(|value| value.modified()) else {
+        return false;
+    };
     preview_modified >= source_modified
 }
 
@@ -931,48 +1310,91 @@ fn create_node(parent_id: String, name: String, state: State<AppState>) -> Resul
 
 #[tauri::command]
 fn rename_node(id: String, name: String, state: State<AppState>) -> Result<(), String> {
-    if id == ROOT_NODE_ID { return Err("根节点不能重命名".into()); }
-    open_db(&state.vault_path)?.execute("UPDATE nodes SET name=?1 WHERE id=?2", params![name.trim(), id]).map_err(|error| error.to_string())?;
-    Ok(())
+    if id == ROOT_NODE_ID {
+        return Err("根节点不能重命名".into());
+    }
+    let connection = open_db(&state.vault_path)?;
+    connection
+        .execute(
+            "UPDATE nodes SET name=?1 WHERE id=?2",
+            params![name.trim(), id],
+        )
+        .map_err(|error| error.to_string())?;
+    reorganize_all_documents(&connection, &state.vault_path)
 }
 
 #[tauri::command]
 fn move_node(id: String, parent_id: String, state: State<AppState>) -> Result<(), String> {
-    if id == ROOT_NODE_ID { return Err("根节点不能移动".into()); }
+    if id == ROOT_NODE_ID {
+        return Err("根节点不能移动".into());
+    }
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
     let descendants = descendant_ids(&id, &nodes);
-    if descendants.contains(&parent_id) { return Err("不能将节点移动到自身或其下级节点".into()); }
-    connection.execute("UPDATE nodes SET parent_id=?1 WHERE id=?2", params![parent_id, id]).map_err(|error| error.to_string())?;
-    Ok(())
+    if descendants.contains(&parent_id) {
+        return Err("不能将节点移动到自身或其下级节点".into());
+    }
+    connection
+        .execute(
+            "UPDATE nodes SET parent_id=?1 WHERE id=?2",
+            params![parent_id, id],
+        )
+        .map_err(|error| error.to_string())?;
+    reorganize_all_documents(&connection, &state.vault_path)
 }
 
 #[tauri::command]
 fn copy_node(id: String, parent_id: String, state: State<AppState>) -> Result<(), String> {
-    if id == ROOT_NODE_ID { return Err("根节点不能复制".into()); }
+    if id == ROOT_NODE_ID {
+        return Err("根节点不能复制".into());
+    }
     let connection = open_db(&state.vault_path)?;
     copy_node_recursive(&connection, &state.vault_path, &id, &parent_id, true)?;
     Ok(())
 }
 
-fn copy_node_recursive(connection: &Connection, vault: &Path, source_id: &str, target_parent_id: &str, root_copy: bool) -> Result<String, String> {
-    let source_name: String = connection.query_row("SELECT name FROM nodes WHERE id=?1", [source_id], |row| row.get(0)).map_err(|error| error.to_string())?;
-    let requested_name = if root_copy { format!("{} - 副本", source_name) } else { source_name };
+fn copy_node_recursive(
+    connection: &Connection,
+    vault: &Path,
+    source_id: &str,
+    target_parent_id: &str,
+    root_copy: bool,
+) -> Result<String, String> {
+    let source_name: String = connection
+        .query_row("SELECT name FROM nodes WHERE id=?1", [source_id], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    let requested_name = if root_copy {
+        format!("{} - 副本", source_name)
+    } else {
+        source_name
+    };
     let new_id = insert_child_node(connection, target_parent_id, &requested_name, root_copy)?;
 
     let document_ids = {
-        let mut statement = connection.prepare("SELECT id FROM documents WHERE node_id=?1 ORDER BY imported_at").map_err(|error| error.to_string())?;
-        let rows = statement.query_map([source_id], |row| row.get::<_, String>(0)).map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?
+        let mut statement = connection
+            .prepare("SELECT id FROM documents WHERE node_id=?1 ORDER BY imported_at")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([source_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
     };
     for document_id in document_ids {
         copy_document_internal(connection, vault, &document_id, &new_id)?;
     }
 
     let child_ids = {
-        let mut statement = connection.prepare("SELECT id FROM nodes WHERE parent_id=?1 ORDER BY sort_order").map_err(|error| error.to_string())?;
-        let rows = statement.query_map([source_id], |row| row.get::<_, String>(0)).map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?
+        let mut statement = connection
+            .prepare("SELECT id FROM nodes WHERE parent_id=?1 ORDER BY sort_order")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([source_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
     };
     for child_id in child_ids {
         copy_node_recursive(connection, vault, &child_id, &new_id, false)?;
@@ -982,7 +1404,9 @@ fn copy_node_recursive(connection: &Connection, vault: &Path, source_id: &str, t
 
 #[tauri::command]
 fn delete_node(id: String, state: State<AppState>) -> Result<(), String> {
-    if id == ROOT_NODE_ID { return Err("根节点不能删除".into()); }
+    if id == ROOT_NODE_ID {
+        return Err("根节点不能删除".into());
+    }
     let connection = open_db(&state.vault_path)?;
     let nodes = load_nodes(&connection)?;
     let descendants = descendant_ids(&id, &nodes);
@@ -994,7 +1418,13 @@ fn delete_node(id: String, state: State<AppState>) -> Result<(), String> {
             .prepare("SELECT id, node_id, display_name FROM documents")
             .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
             .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法读取节点内的资料记录：{error}"))?
@@ -1003,18 +1433,24 @@ fn delete_node(id: String, state: State<AppState>) -> Result<(), String> {
     let mut document_ids = Vec::new();
     let mut ignored_document_ids = Vec::new();
     for (document_id, node_id, name) in document_records {
-        if !descendants.contains(&node_id) { continue; }
-        if is_ignored_system_entry(Path::new(&name)) { ignored_document_ids.push(document_id); }
-        else { document_ids.push(document_id); }
+        if !descendants.contains(&node_id) {
+            continue;
+        }
+        if is_ignored_system_entry(Path::new(&name)) {
+            ignored_document_ids.push(document_id);
+        } else {
+            document_ids.push(document_id);
+        }
     }
 
     delete_documents_internal(&connection, &state, &document_ids)?;
 
     // 已被界面隐藏的系统杂项不进入应用回收站，直接清除旧目录和数据库残留。
     for document_id in ignored_document_ids {
-        let directory = state.vault_path.join("files").join(&document_id);
+        let directory = document_directory(&connection, &state.vault_path, &document_id)?;
         if directory.exists() {
-            fs::remove_dir_all(&directory).map_err(|error| format!("无法清理系统杂项文件：{error}"))?;
+            fs::remove_dir_all(&directory)
+                .map_err(|error| format!("无法清理系统杂项文件：{error}"))?;
         }
         connection
             .execute("DELETE FROM documents WHERE id=?1", [&document_id])
@@ -1038,7 +1474,9 @@ fn node_depth(id: &str, nodes: &[NodeItem]) -> usize {
         if let Some(parent) = &node.parent_id {
             depth += 1;
             current = nodes.iter().find(|candidate| &candidate.id == parent);
-        } else { break; }
+        } else {
+            break;
+        }
     }
     depth
 }
@@ -1047,59 +1485,118 @@ fn node_depth(id: &str, nodes: &[NodeItem]) -> usize {
 fn create_tag(name: String, color: String, state: State<AppState>) -> Result<TagItem, String> {
     let id = Uuid::new_v4().to_string();
     let connection = open_db(&state.vault_path)?;
-    connection.execute("INSERT INTO tags(id, name, color) VALUES(?1, ?2, ?3)", params![id, name.trim(), color]).map_err(|error| error.to_string())?;
-    Ok(TagItem { id, name: name.trim().to_string(), color, document_count: 0 })
+    connection
+        .execute(
+            "INSERT INTO tags(id, name, color) VALUES(?1, ?2, ?3)",
+            params![id, name.trim(), color],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(TagItem {
+        id,
+        name: name.trim().to_string(),
+        color,
+        document_count: 0,
+    })
 }
 
 #[tauri::command]
 fn rename_tag(id: String, name: String, state: State<AppState>) -> Result<(), String> {
-    if name.trim().is_empty() { return Err("标签名不能为空".into()); }
-    open_db(&state.vault_path)?.execute("UPDATE tags SET name=?1 WHERE id=?2", params![name.trim(), id]).map_err(|error| error.to_string())?;
+    if name.trim().is_empty() {
+        return Err("标签名不能为空".into());
+    }
+    open_db(&state.vault_path)?
+        .execute(
+            "UPDATE tags SET name=?1 WHERE id=?2",
+            params![name.trim(), id],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn update_tag_color(id: String, color: String, state: State<AppState>) -> Result<(), String> {
-    open_db(&state.vault_path)?.execute("UPDATE tags SET color=?1 WHERE id=?2", params![color, id]).map_err(|error| error.to_string())?;
+    open_db(&state.vault_path)?
+        .execute("UPDATE tags SET color=?1 WHERE id=?2", params![color, id])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn delete_tag(id: String, state: State<AppState>) -> Result<(), String> {
-    open_db(&state.vault_path)?.execute("DELETE FROM tags WHERE id=?1", [id]).map_err(|error| error.to_string())?;
+    open_db(&state.vault_path)?
+        .execute("DELETE FROM tags WHERE id=?1", [id])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn set_document_tags(document_id: String, tag_ids: Vec<String>, state: State<AppState>) -> Result<(), String> {
+fn set_document_tags(
+    document_id: String,
+    tag_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let mut connection = open_db(&state.vault_path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
-    transaction.execute("DELETE FROM document_tags WHERE document_id=?1", [&document_id]).map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM document_tags WHERE document_id=?1",
+            [&document_id],
+        )
+        .map_err(|error| error.to_string())?;
     for tag_id in tag_ids {
-        transaction.execute("INSERT OR IGNORE INTO document_tags(document_id, tag_id) VALUES(?1, ?2)", params![&document_id, &tag_id]).map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO document_tags(document_id, tag_id) VALUES(?1, ?2)",
+                params![&document_id, &tag_id],
+            )
+            .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn add_tags_to_documents(document_ids: Vec<String>, tag_ids: Vec<String>, state: State<AppState>) -> Result<(), String> {
+fn add_tags_to_documents(
+    document_ids: Vec<String>,
+    tag_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let mut connection = open_db(&state.vault_path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
     for document_id in &document_ids {
         for tag_id in &tag_ids {
-            transaction.execute("INSERT OR IGNORE INTO document_tags(document_id, tag_id) VALUES(?1, ?2)", params![document_id, tag_id]).map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO document_tags(document_id, tag_id) VALUES(?1, ?2)",
+                    params![document_id, tag_id],
+                )
+                .map_err(|error| error.to_string())?;
         }
     }
     transaction.commit().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn remove_tags_from_documents(document_ids: Vec<String>, tag_ids: Vec<String>, state: State<AppState>) -> Result<(), String> {
+fn remove_tags_from_documents(
+    document_ids: Vec<String>,
+    tag_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let mut connection = open_db(&state.vault_path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
     for document_id in &document_ids {
         for tag_id in &tag_ids {
-            transaction.execute("DELETE FROM document_tags WHERE document_id=?1 AND tag_id=?2", params![document_id, tag_id]).map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM document_tags WHERE document_id=?1 AND tag_id=?2",
+                    params![document_id, tag_id],
+                )
+                .map_err(|error| error.to_string())?;
         }
     }
     transaction.commit().map_err(|error| error.to_string())
@@ -1107,22 +1604,41 @@ fn remove_tags_from_documents(document_ids: Vec<String>, tag_ids: Vec<String>, s
 
 #[tauri::command]
 fn update_notes(document_id: String, notes: String, state: State<AppState>) -> Result<(), String> {
-    open_db(&state.vault_path)?.execute("UPDATE documents SET notes=?1 WHERE id=?2", params![notes, document_id]).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn update_expiry(document_id: String, expires_at: Option<i64>, state: State<AppState>) -> Result<(), String> {
     open_db(&state.vault_path)?
-        .execute("UPDATE documents SET expires_at=?1 WHERE id=?2", params![expires_at, document_id])
+        .execute(
+            "UPDATE documents SET notes=?1 WHERE id=?2",
+            params![notes, document_id],
+        )
         .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn set_document_starred(document_id: String, starred: bool, state: State<AppState>) -> Result<(), String> {
+fn update_expiry(
+    document_id: String,
+    expires_at: Option<i64>,
+    state: State<AppState>,
+) -> Result<(), String> {
     open_db(&state.vault_path)?
-        .execute("UPDATE documents SET starred=?1 WHERE id=?2", params![starred as i64, document_id])
+        .execute(
+            "UPDATE documents SET expires_at=?1 WHERE id=?2",
+            params![expires_at, document_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_document_starred(
+    document_id: String,
+    starred: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    open_db(&state.vault_path)?
+        .execute(
+            "UPDATE documents SET starred=?1 WHERE id=?2",
+            params![starred as i64, document_id],
+        )
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -1131,9 +1647,13 @@ fn set_document_starred(document_id: String, starred: bool, state: State<AppStat
 fn rename_document(id: String, name: String, state: State<AppState>) -> Result<(), String> {
     validate_file_name(&name)?;
     let connection = open_db(&state.vault_path)?;
-    let (relative, extension): (String, String) = connection.query_row(
-        "SELECT relative_path, extension FROM documents WHERE id=?1", [&id], |row| Ok((row.get(0)?, row.get(1)?))
-    ).map_err(|error| error.to_string())?;
+    let (node_id, relative, extension): (String, String, String) = connection
+        .query_row(
+            "SELECT node_id, relative_path, extension FROM documents WHERE id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| error.to_string())?;
     let mut final_name = name.trim().to_string();
     if Path::new(&final_name).extension().is_none() && !extension.is_empty() {
         final_name = format!("{}.{}", final_name, extension);
@@ -1142,35 +1662,78 @@ fn rename_document(id: String, name: String, state: State<AppState>) -> Result<(
     let old_path = state.vault_path.join(&relative);
     let new_path = old_path.parent().ok_or("文件路径异常")?.join(&final_name);
     fs::rename(&old_path, &new_path).map_err(|error| error.to_string())?;
-    let new_relative = new_path.strip_prefix(&state.vault_path).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
-    connection.execute("UPDATE documents SET display_name=?1, relative_path=?2 WHERE id=?3", params![final_name, new_relative, id]).map_err(|error| error.to_string())?;
+    let new_relative = new_path
+        .strip_prefix(&state.vault_path)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    connection
+        .execute(
+            "UPDATE documents SET display_name=?1, relative_path=?2 WHERE id=?3",
+            params![final_name, new_relative, id],
+        )
+        .map_err(|error| error.to_string())?;
+    let organized_relative = relocate_document_storage(
+        &connection,
+        &state.vault_path,
+        &id,
+        &node_id,
+        &final_name,
+        &new_relative,
+    )?;
+    if organized_relative != new_relative {
+        connection
+            .execute(
+                "UPDATE documents SET relative_path=?1 WHERE id=?2",
+                params![organized_relative, id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
 fn validate_file_name(name: &str) -> Result<(), String> {
-    if name.trim().is_empty() { return Err("文件名不能为空".into()); }
-    if name.chars().any(|character| "<>:\"/\\|?*".contains(character)) { return Err("文件名包含 Windows 不允许的字符".into()); }
+    if name.trim().is_empty() {
+        return Err("文件名不能为空".into());
+    }
+    if name
+        .chars()
+        .any(|character| "<>:\"/\\|?*".contains(character))
+    {
+        return Err("文件名包含 Windows 不允许的字符".into());
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn move_documents(ids: Vec<String>, node_id: String, state: State<AppState>) -> Result<(), String> {
-    let mut connection = open_db(&state.vault_path)?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let connection = open_db(&state.vault_path)?;
     for id in ids {
-        transaction.execute("UPDATE documents SET node_id=?1 WHERE id=?2", params![node_id, id]).map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE documents SET node_id=?1 WHERE id=?2",
+                params![node_id, id],
+            )
+            .map_err(|error| error.to_string())?;
     }
-    transaction.commit().map_err(|error| error.to_string())
+    reorganize_all_documents(&connection, &state.vault_path)
 }
 
 #[tauri::command]
 fn copy_documents(ids: Vec<String>, node_id: String, state: State<AppState>) -> Result<(), String> {
     let connection = open_db(&state.vault_path)?;
-    for id in ids { copy_document_internal(&connection, &state.vault_path, &id, &node_id)?; }
+    for id in ids {
+        copy_document_internal(&connection, &state.vault_path, &id, &node_id)?;
+    }
     Ok(())
 }
 
-fn copy_document_internal(connection: &Connection, vault: &Path, source_id: &str, target_node_id: &str) -> Result<String, String> {
+fn copy_document_internal(
+    connection: &Connection,
+    vault: &Path,
+    source_id: &str,
+    target_node_id: &str,
+) -> Result<String, String> {
     let (name, extension, relative, size, modified, content, notes, expires_at): (String, String, String, i64, i64, String, String, Option<i64>) = connection.query_row(
         "SELECT display_name, extension, relative_path, size, modified_at, content_text, notes, expires_at FROM documents WHERE id=?1",
         [source_id],
@@ -1178,11 +1741,16 @@ fn copy_document_internal(connection: &Connection, vault: &Path, source_id: &str
     ).map_err(|error| error.to_string())?;
     let new_id = Uuid::new_v4().to_string();
     let new_name = copy_name(&name);
-    let directory = vault.join("files").join(&new_id);
+    let directory =
+        document_storage_directory(connection, vault, target_node_id, &new_name, &new_id)?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let destination = directory.join(&new_name);
     fs::copy(vault.join(&relative), &destination).map_err(|error| error.to_string())?;
-    let new_relative = destination.strip_prefix(vault).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
+    let new_relative = destination
+        .strip_prefix(vault)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
     connection.execute(
         "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at, expires_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![&new_id, target_node_id, new_name, extension, new_relative, size, modified, content, notes, now_ms(), expires_at],
@@ -1196,7 +1764,10 @@ fn copy_document_internal(connection: &Connection, vault: &Path, source_id: &str
 
 fn copy_name(name: &str) -> String {
     let path = Path::new(name);
-    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or(name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name);
     match path.extension().and_then(|value| value.to_str()) {
         Some(extension) => format!("{} - 副本.{}", stem, extension),
         None => format!("{} - 副本", stem),
@@ -1216,7 +1787,11 @@ fn move_to_system_trash(path: &Path) -> Result<(), String> {
         .env("EAZYLEDGER_RECYCLE_TARGET", path)
         .status()
         .map_err(|error| format!("无法调用系统回收站：{error}"))?;
-    if status.success() { Ok(()) } else { Err("系统回收站拒绝了删除操作".into()) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err("系统回收站拒绝了删除操作".into())
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1224,38 +1799,70 @@ fn move_to_system_trash(_path: &Path) -> Result<(), String> {
     Err("当前平台暂不支持系统回收站删除方式".into())
 }
 
-fn delete_documents_internal(connection: &Connection, state: &AppState, ids: &[String]) -> Result<(), String> {
+fn delete_documents_internal(
+    connection: &Connection,
+    state: &AppState,
+    ids: &[String],
+) -> Result<(), String> {
     let config = read_app_config(&state.config_path, &state.vault_path);
     let trash_path = resolved_trash_path(&config, &state.vault_path);
     fs::create_dir_all(&trash_path).map_err(|error| error.to_string())?;
     for id in ids {
-        let directory = state.vault_path.join("files").join(id);
+        let directory = document_directory(connection, &state.vault_path, id)?;
         match config.delete_mode.as_str() {
             "system" => {
                 if directory.exists() {
                     if let Some(file_path) = first_file_in(&directory) {
                         move_to_system_trash(&file_path)?;
                     }
-                    if directory.exists() { fs::remove_dir_all(&directory).map_err(|error| error.to_string())?; }
+                    if directory.exists() {
+                        fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+                    }
                 }
             }
             "permanent" => {
-                if directory.exists() { fs::remove_dir_all(&directory).map_err(|error| error.to_string())?; }
+                if directory.exists() {
+                    fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+                }
             }
-            _ => move_document_to_app_trash(connection, &state.vault_path, &trash_path, id, &directory)?,
+            _ => move_document_to_app_trash(
+                connection,
+                &state.vault_path,
+                &trash_path,
+                id,
+                &directory,
+            )?,
         }
-        connection.execute("DELETE FROM documents WHERE id=?1", [id]).map_err(|error| error.to_string())?;
+        connection
+            .execute("DELETE FROM documents WHERE id=?1", [id])
+            .map_err(|error| error.to_string())?;
     }
+    remove_empty_storage_directories(&state.vault_path.join("files"));
     Ok(())
 }
 
-fn move_document_to_app_trash(connection: &Connection, vault: &Path, trash_path: &Path, id: &str, directory: &Path) -> Result<(), String> {
-    let document = load_documents(connection)?.into_iter().find(|item| item.id == id).ok_or("资料记录不存在")?;
-    let tag_ids = document.tags.iter().map(|tag| tag.id.clone()).collect::<Vec<_>>();
+fn move_document_to_app_trash(
+    connection: &Connection,
+    vault: &Path,
+    trash_path: &Path,
+    id: &str,
+    directory: &Path,
+) -> Result<(), String> {
+    let document = load_documents(connection)?
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or("资料记录不存在")?;
+    let tag_ids = document
+        .tags
+        .iter()
+        .map(|tag| tag.id.clone())
+        .collect::<Vec<_>>();
     let deleted_at = now_ms();
     let storage_name = format!("{}-{}", id, deleted_at);
     let destination = trash_path.join(&storage_name);
-    if directory.exists() { move_directory(directory, &destination)?; }
+    if directory.exists() {
+        move_directory(directory, &destination)?;
+    }
     let trash_id = Uuid::new_v4().to_string();
     let insert = connection.execute(
         "INSERT INTO trash_items(trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name)
@@ -1263,7 +1870,9 @@ fn move_document_to_app_trash(connection: &Connection, vault: &Path, trash_path:
         params![trash_id, document.id, document.node_id, document.name, document.extension, document.size, document.modified_at, document.notes, document.expires_at, document.starred as i64, serde_json::to_string(&tag_ids).map_err(|error| error.to_string())?, deleted_at, storage_name],
     );
     if let Err(error) = insert {
-        if destination.exists() { let _ = move_directory(&destination, directory); }
+        if destination.exists() {
+            let _ = move_directory(&destination, directory);
+        }
         return Err(error.to_string());
     }
     let _ = vault;
@@ -1277,16 +1886,21 @@ fn list_trash(state: State<AppState>) -> Result<Vec<TrashItem>, String> {
         "SELECT ti.trash_id, ti.id, ti.display_name, ti.extension, ti.size, ti.deleted_at, n.name
          FROM trash_items ti LEFT JOIN nodes n ON n.id=ti.original_node_id ORDER BY ti.deleted_at DESC"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok(TrashItem {
-        trash_id: row.get(0)?,
-        id: row.get(1)?,
-        name: row.get(2)?,
-        extension: row.get(3)?,
-        size: row.get(4)?,
-        deleted_at: row.get(5)?,
-        original_node_name: row.get(6)?,
-    })).map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    let rows = statement
+        .query_map([], |row| {
+            Ok(TrashItem {
+                trash_id: row.get(0)?,
+                id: row.get(1)?,
+                name: row.get(2)?,
+                extension: row.get(3)?,
+                size: row.get(4)?,
+                deleted_at: row.get(5)?,
+                original_node_name: row.get(6)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 fn load_trash_record(connection: &Connection, trash_id: &str) -> Result<TrashRecord, String> {
@@ -1322,14 +1936,38 @@ fn restore_trash_item(trash_id: String, state: State<AppState>) -> Result<(), St
     let config = read_app_config(&state.config_path, &state.vault_path);
     let trash_path = resolved_trash_path(&config, &state.vault_path);
     let source = trash_path.join(&record.storage_name);
-    if !source.exists() { return Err("回收站中的文件目录已丢失".into()); }
-    let destination = state.vault_path.join("files").join(&record.id);
-    if destination.exists() { return Err("资料库中已存在同 ID 文件，无法自动恢复".into()); }
+    if !source.exists() {
+        return Err("回收站中的文件目录已丢失".into());
+    }
+    let node_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)",
+            [&record.original_node_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    let node_id = if node_exists {
+        record.original_node_id.clone()
+    } else {
+        ROOT_NODE_ID.into()
+    };
+    let destination = document_storage_directory(
+        &connection,
+        &state.vault_path,
+        &node_id,
+        &record.name,
+        &record.id,
+    )?;
+    if destination.exists() {
+        return Err("资料库中已存在同 ID 文件，无法自动恢复".into());
+    }
     move_directory(&source, &destination)?;
     let file_path = first_file_in(&destination).ok_or("回收站项目中没有可恢复的文件")?;
-    let relative_path = file_path.strip_prefix(&state.vault_path).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
-    let node_exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)", [&record.original_node_id], |row| row.get(0)).unwrap_or(false);
-    let node_id = if node_exists { record.original_node_id.clone() } else { ROOT_NODE_ID.into() };
+    let relative_path = file_path
+        .strip_prefix(&state.vault_path)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
     let content_text = extract_text(&file_path, &record.extension);
     let result = connection.execute(
         "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at, expires_at, starred)
@@ -1346,7 +1984,12 @@ fn restore_trash_item(trash_id: String, state: State<AppState>) -> Result<(), St
             params![record.id, tag_id],
         ).map_err(|error| error.to_string())?;
     }
-    connection.execute("DELETE FROM trash_items WHERE trash_id=?1", [&record.trash_id]).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM trash_items WHERE trash_id=?1",
+            [&record.trash_id],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1379,11 +2022,16 @@ fn empty_trash(state: State<AppState>) -> Result<(), String> {
     if trash_path.exists() {
         for entry in fs::read_dir(&trash_path).map_err(|error| error.to_string())? {
             let path = entry.map_err(|error| error.to_string())?.path();
-            if path.is_dir() { fs::remove_dir_all(path).map_err(|error| error.to_string())?; }
-            else { fs::remove_file(path).map_err(|error| error.to_string())?; }
+            if path.is_dir() {
+                fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+            } else {
+                fs::remove_file(path).map_err(|error| error.to_string())?;
+            }
         }
     }
-    open_db(&state.vault_path)?.execute("DELETE FROM trash_items", []).map_err(|error| error.to_string())?;
+    open_db(&state.vault_path)?
+        .execute("DELETE FROM trash_items", [])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1414,7 +2062,8 @@ fn newer_channel_update(
 ) -> Option<(Update, &'static str)> {
     match (stable, beta) {
         (Some(stable), Some(beta)) => {
-            let stable_version = semver::Version::parse(stable.version.trim_start_matches('v')).ok();
+            let stable_version =
+                semver::Version::parse(stable.version.trim_start_matches('v')).ok();
             let beta_version = semver::Version::parse(beta.version.trim_start_matches('v')).ok();
             match (stable_version, beta_version) {
                 (Some(stable_version), Some(beta_version)) if stable_version >= beta_version => {
@@ -1485,9 +2134,9 @@ async fn install_beta_update(
         .download_and_install(
             move |chunk_length, total| {
                 downloaded += chunk_length as u64;
-                let percent = total.filter(|value| *value > 0).map(|value| {
-                    ((downloaded.saturating_mul(100) / value).min(100)) as u64
-                });
+                let percent = total
+                    .filter(|value| *value > 0)
+                    .map(|value| ((downloaded.saturating_mul(100) / value).min(100)) as u64);
                 let _ = on_event.send(ChannelUpdateProgress {
                     downloaded,
                     total,
@@ -1501,9 +2150,18 @@ async fn install_beta_update(
 }
 
 #[tauri::command]
-fn update_preferences(delete_mode: String, tag_display_limit: usize, receive_beta_updates: bool, state: State<AppState>) -> Result<AppSettings, String> {
-    if !matches!(delete_mode.as_str(), "app" | "system" | "permanent") { return Err("不支持的删除方式".into()); }
-    if !(1..=10).contains(&tag_display_limit) { return Err("标签显示上限必须在 1 到 10 之间".into()); }
+fn update_preferences(
+    delete_mode: String,
+    tag_display_limit: usize,
+    receive_beta_updates: bool,
+    state: State<AppState>,
+) -> Result<AppSettings, String> {
+    if !matches!(delete_mode.as_str(), "app" | "system" | "permanent") {
+        return Err("不支持的删除方式".into());
+    }
+    if !(1..=10).contains(&tag_display_limit) {
+        return Err("标签显示上限必须在 1 到 10 之间".into());
+    }
     let mut config = read_app_config(&state.config_path, &state.vault_path);
     config.delete_mode = delete_mode;
     config.tag_display_limit = tag_display_limit;
@@ -1517,12 +2175,21 @@ fn change_trash_location(destination: String, state: State<AppState>) -> Result<
     let destination = PathBuf::from(destination);
     let mut config = read_app_config(&state.config_path, &state.vault_path);
     let current = resolved_trash_path(&config, &state.vault_path);
-    if destination == current { return Err("所选目录已经是当前应用回收站位置".into()); }
-    if destination.starts_with(state.vault_path.join("files")) || current.starts_with(&destination) || destination.starts_with(&current) {
+    if destination == current {
+        return Err("所选目录已经是当前应用回收站位置".into());
+    }
+    if destination.starts_with(state.vault_path.join("files"))
+        || current.starts_with(&destination)
+        || destination.starts_with(&current)
+    {
         return Err("应用回收站不能位于资料文件目录内，也不能与原回收站互相包含".into());
     }
     fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
-    if fs::read_dir(&destination).map_err(|error| error.to_string())?.next().is_some() {
+    if fs::read_dir(&destination)
+        .map_err(|error| error.to_string())?
+        .next()
+        .is_some()
+    {
         return Err("为避免混入其他文件，新的应用回收站位置必须是空目录".into());
     }
     if current.exists() {
@@ -1534,17 +2201,24 @@ fn change_trash_location(destination: String, state: State<AppState>) -> Result<
     }
     config.trash_path = destination.to_string_lossy().to_string();
     write_app_config(&state.config_path, &config)?;
-    Ok(format!("应用回收站已迁移到 {}", destination.to_string_lossy()))
+    Ok(format!(
+        "应用回收站已迁移到 {}",
+        destination.to_string_lossy()
+    ))
 }
 
 fn migrate_legacy_trash_directory(vault: &Path, destination: &Path) -> Result<(), String> {
     let legacy = vault.join("trash");
-    if !legacy.exists() || legacy == destination { return Ok(()); }
+    if !legacy.exists() || legacy == destination {
+        return Ok(());
+    }
     for entry in fs::read_dir(&legacy).map_err(|error| error.to_string())? {
         let path = entry.map_err(|error| error.to_string())?.path();
         let name = path.file_name().ok_or("旧回收站项目名称异常")?;
         let target = destination.join(name);
-        if !target.exists() { move_directory(&path, &target)?; }
+        if !target.exists() {
+            move_directory(&path, &target)?;
+        }
     }
     let _ = fs::remove_dir(&legacy);
     Ok(())
@@ -1552,18 +2226,46 @@ fn migrate_legacy_trash_directory(vault: &Path, destination: &Path) -> Result<()
 
 fn index_legacy_trash(vault: &Path, trash_path: &Path) -> Result<(), String> {
     let connection = open_db(vault)?;
-    if !trash_path.exists() { return Ok(()); }
+    if !trash_path.exists() {
+        return Ok(());
+    }
     for entry in fs::read_dir(trash_path).map_err(|error| error.to_string())? {
         let path = entry.map_err(|error| error.to_string())?.path();
-        if !path.is_dir() { continue; }
-        let storage_name = match path.file_name().and_then(|value| value.to_str()) { Some(value) => value.to_string(), None => continue };
-        let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM trash_items WHERE storage_name=?1)", [&storage_name], |row| row.get(0)).unwrap_or(false);
-        if indexed { continue; }
-        let Some(file_path) = first_file_in(&path) else { continue; };
-        let name = file_path.file_name().and_then(|value| value.to_str()).unwrap_or("已删除文件").to_string();
-        let extension = file_path.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
+        if !path.is_dir() {
+            continue;
+        }
+        let storage_name = match path.file_name().and_then(|value| value.to_str()) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
+        let indexed: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM trash_items WHERE storage_name=?1)",
+                [&storage_name],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if indexed {
+            continue;
+        }
+        let Some(file_path) = first_file_in(&path) else {
+            continue;
+        };
+        let name = file_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("已删除文件")
+            .to_string();
+        let extension = file_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
-        let deleted_at = storage_name.rsplit_once('-').and_then(|(_, value)| value.parse::<i64>().ok()).unwrap_or_else(now_ms);
+        let deleted_at = storage_name
+            .rsplit_once('-')
+            .and_then(|(_, value)| value.parse::<i64>().ok())
+            .unwrap_or_else(now_ms);
         connection.execute(
             "INSERT INTO trash_items(trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, '', NULL, 0, '[]', ?8, ?9)",
@@ -1574,7 +2276,12 @@ fn index_legacy_trash(vault: &Path, trash_path: &Path) -> Result<(), String> {
 }
 
 fn first_file_in(directory: &Path) -> Option<PathBuf> {
-    WalkDir::new(directory).min_depth(1).into_iter().filter_map(Result::ok).find(|entry| entry.file_type().is_file()).map(|entry| entry.path().to_path_buf())
+    WalkDir::new(directory)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
 }
 
 #[tauri::command]
@@ -1593,7 +2300,11 @@ fn create_backup(destination: String, state: State<AppState>) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn change_vault_location(destination: String, migrate: bool, state: State<AppState>) -> Result<String, String> {
+fn change_vault_location(
+    destination: String,
+    migrate: bool,
+    state: State<AppState>,
+) -> Result<String, String> {
     let destination = PathBuf::from(destination);
     if destination == state.vault_path {
         return Err("所选目录已经是当前资料库位置".into());
@@ -1602,13 +2313,18 @@ fn change_vault_location(destination: String, migrate: bool, state: State<AppSta
         return Err("新位置不能位于当前资料库内部，也不能是当前资料库的上级目录".into());
     }
     fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
-    let destination_not_empty = fs::read_dir(&destination).map_err(|error| error.to_string())?.next().is_some();
+    let destination_not_empty = fs::read_dir(&destination)
+        .map_err(|error| error.to_string())?
+        .next()
+        .is_some();
     if migrate {
         if destination_not_empty {
             return Err("为避免覆盖其他文件，迁移目标必须是空目录".into());
         }
         let connection = open_db(&state.vault_path)?;
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|error| error.to_string())?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|error| error.to_string())?;
         drop(connection);
         copy_directory(&state.vault_path, &destination)?;
     } else {
@@ -1620,7 +2336,10 @@ fn change_vault_location(destination: String, migrate: bool, state: State<AppSta
     let mut config = read_app_config(&state.config_path, &state.vault_path);
     config.vault_path = destination.to_string_lossy().to_string();
     write_app_config(&state.config_path, &config)?;
-    Ok(format!("新的资料库位置已设置为 {}。请关闭并重新打开应用以完成切换。旧资料库仍保留在原位置。", destination.to_string_lossy()))
+    Ok(format!(
+        "新的资料库位置已设置为 {}。请关闭并重新打开应用以完成切换。旧资料库仍保留在原位置。",
+        destination.to_string_lossy()
+    ))
 }
 
 fn load_nodes(connection: &Connection) -> Result<Vec<NodeItem>, String> {
@@ -1632,12 +2351,30 @@ fn load_nodes(connection: &Connection) -> Result<Vec<NodeItem>, String> {
            AND substr(lower(d.display_name), 1, 2) <> '~$'
          GROUP BY n.id ORDER BY n.sort_order, n.name"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok(NodeItem { id: row.get(0)?, parent_id: row.get(1)?, name: row.get(2)?, sort_order: row.get(3)?, document_count: row.get(4)? })).map_err(|error| error.to_string())?;
-    let mut nodes = rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(NodeItem {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                sort_order: row.get(3)?,
+                document_count: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut nodes = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     let snapshot = nodes.clone();
-    let direct_counts: HashMap<String, i64> = snapshot.iter().map(|node| (node.id.clone(), node.document_count)).collect();
+    let direct_counts: HashMap<String, i64> = snapshot
+        .iter()
+        .map(|node| (node.id.clone(), node.document_count))
+        .collect();
     for node in &mut nodes {
-        node.document_count = descendant_ids(&node.id, &snapshot).iter().map(|id| direct_counts.get(id).copied().unwrap_or(0)).sum();
+        node.document_count = descendant_ids(&node.id, &snapshot)
+            .iter()
+            .map(|id| direct_counts.get(id).copied().unwrap_or(0))
+            .sum();
     }
     Ok(nodes)
 }
@@ -1653,27 +2390,92 @@ fn load_tags(connection: &Connection) -> Result<Vec<TagItem>, String> {
            AND substr(lower(d.display_name), 1, 2) <> '~$'
          GROUP BY t.id ORDER BY t.name"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok(TagItem { id: row.get(0)?, name: row.get(1)?, color: row.get(2)?, document_count: row.get(3)? })).map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    let rows = statement
+        .query_map([], |row| {
+            Ok(TagItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                document_count: row.get(3)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 fn load_documents(connection: &Connection) -> Result<Vec<DocumentItem>, String> {
     let mut statement = connection.prepare(
         "SELECT id, node_id, display_name, extension, size, modified_at, relative_path, notes, expires_at, starred FROM documents ORDER BY starred DESC, modified_at DESC"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, i64>(9)? != 0))).map_err(|error| error.to_string())?;
-    let raw = rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-    raw.into_iter().filter(|(_, _, name, _, _, _, _, _, _, _)| !is_ignored_system_entry(Path::new(name))).map(|(id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at, starred)| {
-        Ok(DocumentItem { tags: tags_for_document(connection, &id)?, id, node_id, name, extension, size, modified_at, relative_path, notes, expires_at, starred })
-    }).collect()
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, i64>(9)? != 0,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let raw = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    raw.into_iter()
+        .filter(|(_, _, name, _, _, _, _, _, _, _)| !is_ignored_system_entry(Path::new(name)))
+        .map(
+            |(
+                id,
+                node_id,
+                name,
+                extension,
+                size,
+                modified_at,
+                relative_path,
+                notes,
+                expires_at,
+                starred,
+            )| {
+                Ok(DocumentItem {
+                    tags: tags_for_document(connection, &id)?,
+                    id,
+                    node_id,
+                    name,
+                    extension,
+                    size,
+                    modified_at,
+                    relative_path,
+                    notes,
+                    expires_at,
+                    starred,
+                })
+            },
+        )
+        .collect()
 }
 
 fn tags_for_document(connection: &Connection, document_id: &str) -> Result<Vec<TagItem>, String> {
     let mut statement = connection.prepare(
         "SELECT t.id, t.name, t.color FROM tags t JOIN document_tags dt ON dt.tag_id=t.id WHERE dt.document_id=?1 ORDER BY t.name"
     ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map([document_id], |row| Ok(TagItem { id: row.get(0)?, name: row.get(1)?, color: row.get(2)?, document_count: 0 })).map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    let rows = statement
+        .query_map([document_id], |row| {
+            Ok(TagItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                document_count: 0,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 fn descendant_ids(node_id: &str, nodes: &[NodeItem]) -> HashSet<String> {
@@ -1681,26 +2483,63 @@ fn descendant_ids(node_id: &str, nodes: &[NodeItem]) -> HashSet<String> {
     loop {
         let before = ids.len();
         for node in nodes {
-            if node.parent_id.as_ref().map(|parent| ids.contains(parent)).unwrap_or(false) {
+            if node
+                .parent_id
+                .as_ref()
+                .map(|parent| ids.contains(parent))
+                .unwrap_or(false)
+            {
                 ids.insert(node.id.clone());
             }
         }
-        if ids.len() == before { break; }
+        if ids.len() == before {
+            break;
+        }
     }
     ids
 }
 
 fn document_path(id: &str, vault: &Path) -> Result<PathBuf, String> {
     let connection = open_db(vault)?;
-    let relative: String = connection.query_row("SELECT relative_path FROM documents WHERE id=?1", [id], |row| row.get(0)).map_err(|_| "文件记录不存在".to_string())?;
+    let relative: String = connection
+        .query_row(
+            "SELECT relative_path FROM documents WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "文件记录不存在".to_string())?;
     let path = vault.join(relative);
-    if !path.exists() { return Err("资料文件已丢失，请检查资料库".into()); }
+    if !path.exists() {
+        return Err("资料文件已丢失，请检查资料库".into());
+    }
     Ok(path)
+}
+
+fn document_directory(connection: &Connection, vault: &Path, id: &str) -> Result<PathBuf, String> {
+    let relative: String = connection
+        .query_row(
+            "SELECT relative_path FROM documents WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "文件记录不存在".to_string())?;
+    let directory = vault
+        .join(relative)
+        .parent()
+        .ok_or("资料文件路径异常")?
+        .to_path_buf();
+    let files_root = vault.join("files");
+    if !directory.starts_with(&files_root) || directory == files_root {
+        return Err("资料目录超出资料库范围".into());
+    }
+    Ok(directory)
 }
 
 fn extract_text(path: &Path, extension: &str) -> String {
     match extension {
-        "txt" | "md" | "csv" | "json" | "xml" | "log" => fs::read_to_string(path).unwrap_or_default(),
+        "txt" | "md" | "csv" | "json" | "xml" | "log" => {
+            fs::read_to_string(path).unwrap_or_default()
+        }
         "docx" => extract_docx(path).unwrap_or_default(),
         _ => String::new(),
     }
@@ -1709,58 +2548,94 @@ fn extract_text(path: &Path, extension: &str) -> String {
 fn extract_docx(path: &Path) -> Result<String, String> {
     let file = fs::File::open(path).map_err(|error| error.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
-    let mut document = archive.by_name("word/document.xml").map_err(|error| error.to_string())?;
+    let mut document = archive
+        .by_name("word/document.xml")
+        .map_err(|error| error.to_string())?;
     let mut xml = String::new();
-    document.read_to_string(&mut xml).map_err(|error| error.to_string())?;
+    document
+        .read_to_string(&mut xml)
+        .map_err(|error| error.to_string())?;
     let paragraph = Regex::new(r"</w:p>").map_err(|error| error.to_string())?;
     let tab = Regex::new(r"<w:tab[^>]*/>").map_err(|error| error.to_string())?;
     let tags = Regex::new(r"<[^>]+>").map_err(|error| error.to_string())?;
     let text = paragraph.replace_all(&xml, "\n");
     let text = tab.replace_all(&text, "\t");
     let text = tags.replace_all(&text, "");
-    Ok(text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'"))
+    Ok(text
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'"))
 }
 
 fn start_watcher(vault: PathBuf, app: tauri::AppHandle) -> Result<RecommendedWatcher, String> {
     let watched_vault = vault.clone();
-    let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
-        if let Ok(event) = result {
-            let has_changes = !event.paths.is_empty();
-            for path in event.paths {
-                if path.is_file() {
-                    let _ = refresh_changed_file(&watched_vault, &path);
+    let mut watcher =
+        notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = result {
+                let has_changes = !event.paths.is_empty();
+                for path in event.paths {
+                    if path.is_file() {
+                        let _ = refresh_changed_file(&watched_vault, &path);
+                    }
+                }
+                if has_changes {
+                    let _ = app.emit("vault-changed", ());
                 }
             }
-            if has_changes {
-                let _ = app.emit("vault-changed", ());
-            }
-        }
-    }).map_err(|error| error.to_string())?;
-    watcher.watch(&vault.join("files"), RecursiveMode::Recursive).map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| error.to_string())?;
+    watcher
+        .watch(&vault.join("files"), RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
     Ok(watcher)
 }
 
 fn refresh_changed_file(vault: &Path, path: &Path) -> Result<(), String> {
-    let relative = path.strip_prefix(vault).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
+    let relative = path
+        .strip_prefix(vault)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
     let connection = open_db(vault)?;
-    let record: Result<(String, String), _> = connection.query_row("SELECT id, extension FROM documents WHERE relative_path=?1", [&relative], |row| Ok((row.get(0)?, row.get(1)?)));
-    let (id, extension) = match record { Ok(value) => value, Err(_) => return Ok(()) };
+    let record: Result<(String, String), _> = connection.query_row(
+        "SELECT id, extension FROM documents WHERE relative_path=?1",
+        [&relative],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+    let (id, extension) = match record {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
     let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
-    connection.execute(
-        "UPDATE documents SET size=?1, modified_at=?2, content_text=?3 WHERE id=?4",
-        params![metadata.len() as i64, modified_ms(&metadata), extract_text(path, &extension), id],
-    ).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE documents SET size=?1, modified_at=?2, content_text=?3 WHERE id=?4",
+            params![
+                metadata.len() as i64,
+                modified_ms(&metadata),
+                extract_text(path, &extension),
+                id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 fn move_directory(source: &Path, destination: &Path) -> Result<(), String> {
-    if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     match fs::rename(source, destination) {
         Ok(()) => Ok(()),
         Err(_) => {
             copy_directory(source, destination)?;
-            if source.is_dir() { fs::remove_dir_all(source).map_err(|error| error.to_string())?; }
-            else { fs::remove_file(source).map_err(|error| error.to_string())?; }
+            if source.is_dir() {
+                fs::remove_dir_all(source).map_err(|error| error.to_string())?;
+            } else {
+                fs::remove_file(source).map_err(|error| error.to_string())?;
+            }
             Ok(())
         }
     }
@@ -1769,34 +2644,138 @@ fn move_directory(source: &Path, destination: &Path) -> Result<(), String> {
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in WalkDir::new(source).into_iter().filter_map(Result::ok) {
-        let relative = entry.path().strip_prefix(source).map_err(|error| error.to_string())?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(|error| error.to_string())?;
         let target = destination.join(relative);
-        if entry.file_type().is_dir() { fs::create_dir_all(&target).map_err(|error| error.to_string())?; }
-        else { fs::copy(entry.path(), target).map_err(|error| error.to_string())?; }
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+        } else {
+            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn modified_ms(metadata: &fs::Metadata) -> i64 {
-    metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map(|duration| duration.as_millis() as i64).unwrap_or_else(now_ms)
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_else(now_ms)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_ignored_system_entry;
-    use std::path::Path;
+    use super::{
+        initialize_vault, is_ignored_system_entry, now_ms, open_db, reorganize_all_documents,
+        safe_storage_segment, storage_id_suffix,
+    };
+    use rusqlite::params;
+    use std::{fs, path::Path};
+    use uuid::Uuid;
 
     #[test]
     fn filters_known_system_clutter_without_hiding_normal_files() {
-        for name in ["Thumbs.db", "THUMBS.DB", "desktop.ini", ".DS_Store", "._合同.docx", "~$合同.docx", "__MACOSX"] {
-            assert!(is_ignored_system_entry(Path::new(name)), "{name} should be ignored");
+        for name in [
+            "Thumbs.db",
+            "THUMBS.DB",
+            "desktop.ini",
+            ".DS_Store",
+            "._合同.docx",
+            "~$合同.docx",
+            "__MACOSX",
+        ] {
+            assert!(
+                is_ignored_system_entry(Path::new(name)),
+                "{name} should be ignored"
+            );
         }
-        for name in ["合同.docx", ".env.example", "thumbnail.png", "desktop-notes.txt"] {
-            assert!(!is_ignored_system_entry(Path::new(name)), "{name} should remain visible");
+        for name in [
+            "合同.docx",
+            ".env.example",
+            "thumbnail.png",
+            "desktop-notes.txt",
+        ] {
+            assert!(
+                !is_ignored_system_entry(Path::new(name)),
+                "{name} should remain visible"
+            );
         }
+    }
+
+    #[test]
+    fn creates_readable_windows_safe_storage_segments() {
+        assert_eq!(
+            safe_storage_segment("合同：华东/2026", "未命名"),
+            "合同：华东_2026"
+        );
+        assert_eq!(safe_storage_segment("CON", "未命名"), "CON_");
+        assert_eq!(safe_storage_segment("...", "未命名"), "未命名");
+        assert_eq!(storage_id_suffix("12345678-abcd-ef00"), "12345678");
+    }
+
+    #[test]
+    fn migrates_legacy_uuid_directories_to_readable_node_hierarchy() {
+        let vault =
+            std::env::temp_dir().join(format!("eazyledger-storage-test-{}", Uuid::new_v4()));
+        initialize_vault(&vault).expect("initialize test vault");
+        let connection = open_db(&vault).expect("open test database");
+        let node_id = "12345678-abcd-ef00-1111-222233334444";
+        let document_id = "87654321-abcd-ef00-1111-222233334444";
+        connection.execute(
+            "INSERT INTO nodes(id, parent_id, name, sort_order, created_at) VALUES(?1, 'root', '华东合同', 0, ?2)",
+            params![node_id, now_ms()],
+        ).expect("insert node");
+        let legacy_directory = vault.join("files").join(document_id);
+        fs::create_dir_all(&legacy_directory).expect("create legacy directory");
+        fs::write(legacy_directory.join("采购合同.txt"), "示例").expect("write legacy file");
+        connection.execute(
+            "INSERT INTO documents(id, node_id, display_name, extension, relative_path, size, modified_at, content_text, notes, imported_at)
+             VALUES(?1, ?2, '采购合同.txt', 'txt', ?3, 6, ?4, '示例', '', ?4)",
+            params![document_id, node_id, format!("files/{document_id}/采购合同.txt"), now_ms()],
+        ).expect("insert document");
+
+        reorganize_all_documents(&connection, &vault).expect("migrate storage");
+        let relative_path: String = connection
+            .query_row(
+                "SELECT relative_path FROM documents WHERE id=?1",
+                [document_id],
+                |row| row.get(0),
+            )
+            .expect("read migrated path");
+        assert!(
+            relative_path.contains("全部资料/华东合同 [12345678]/采购合同 [87654321]/采购合同.txt")
+        );
+        assert!(vault.join(&relative_path).exists());
+        assert!(!legacy_directory.exists());
+
+        connection
+            .execute(
+                "UPDATE documents SET relative_path=?1 WHERE id=?2",
+                params![format!("files/{document_id}/采购合同.txt"), document_id],
+            )
+            .expect("simulate interrupted database update");
+        reorganize_all_documents(&connection, &vault).expect("recover interrupted migration");
+        let recovered_path: String = connection
+            .query_row(
+                "SELECT relative_path FROM documents WHERE id=?1",
+                [document_id],
+                |row| row.get(0),
+            )
+            .expect("read recovered path");
+        assert_eq!(recovered_path, relative_path);
+
+        drop(connection);
+        fs::remove_dir_all(vault).expect("remove test vault");
     }
 }
