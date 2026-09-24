@@ -34,6 +34,7 @@ export type AppSettings = {
   trashPath: string;
   tagDisplayLimit: number;
   trashCount: number;
+  receiveBetaUpdates: boolean;
 };
 
 export type TrashItem = {
