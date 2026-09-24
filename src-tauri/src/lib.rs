@@ -139,7 +139,6 @@ struct TrashRecord {
     expires_at: Option<i64>,
     starred: bool,
     tag_ids: Vec<String>,
-    deleted_at: i64,
     storage_name: String,
 }
 
@@ -1905,7 +1904,7 @@ fn list_trash(state: State<AppState>) -> Result<Vec<TrashItem>, String> {
 
 fn load_trash_record(connection: &Connection, trash_id: &str) -> Result<TrashRecord, String> {
     connection.query_row(
-        "SELECT trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, deleted_at, storage_name
+        "SELECT trash_id, id, original_node_id, display_name, extension, size, modified_at, notes, expires_at, starred, tag_ids_json, storage_name
          FROM trash_items WHERE trash_id=?1",
         [trash_id],
         |row| {
@@ -1922,8 +1921,7 @@ fn load_trash_record(connection: &Connection, trash_id: &str) -> Result<TrashRec
                 expires_at: row.get(8)?,
                 starred: row.get::<_, i64>(9)? != 0,
                 tag_ids: serde_json::from_str(&tag_ids_json).unwrap_or_default(),
-                deleted_at: row.get(11)?,
-                storage_name: row.get(12)?,
+                storage_name: row.get(11)?,
             })
         },
     ).map_err(|error| error.to_string())
