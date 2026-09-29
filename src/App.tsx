@@ -979,21 +979,24 @@ export default function App() {
       <div className="search-box"><Search size={17} /><input disabled={activeTab.view === "settings"} value={activeTab.query} onChange={(event) => updateSearchQuery(event.target.value)} placeholder={activeTab.view === "settings" ? "设置页面" : "搜索名称、标签、备注和正文"} />{activeTab.query && <button onClick={() => updateActive({ query: "" })}><X size={15} /></button>}<SearchTagFilter tags={data.tags} selectedIds={searchTagIds} disabled={activeTab.view === "settings"} onToggle={toggleSearchTag} onClear={() => setSearchTagIds([])} /></div>
     </section>
     <section className="commandbar">
-      <button className="primary" onClick={() => void chooseImport()}><Import size={16} />导入资料</button>
-      <button onClick={() => void chooseImportFolder()}><FolderInput size={16} />导入文件夹</button>
-      <button onClick={() => void addNode()}><FolderPlus size={16} />新建节点</button>
-      <button onClick={() => void addTag()}><Tags size={16} />新建标签</button>
-      <button className={activeTab.includeDescendants ? "scope-active" : ""} disabled={activeTab.view !== "files" || !activeTab.nodeId || Boolean(activeTab.tagId)} onClick={() => updateActive({ includeDescendants: !activeTab.includeDescendants })} title={activeTab.includeDescendants ? "恢复只显示当前节点直属文件" : "汇总当前节点及所有子节点的文件"}><Files size={16} />{activeTab.includeDescendants ? "仅看当前节点" : "查看全部文件"}</button>
-      <button disabled={activeTab.view === "settings"} onClick={() => void pasteAvailableClipboard()} title="支持应用内复制及资源管理器复制的文件"><ClipboardPaste size={16} />粘贴</button>
-      <CommandMenu>
-        <button onClick={() => void renameCurrentNode()}>重命名当前节点</button><button onClick={() => void copyCurrentNode()}>复制当前节点及内容</button><button onClick={() => void moveCurrentNode()}>移动当前节点</button><button className="danger" onClick={() => void deleteCurrentNode()}>删除当前节点</button>
-        <hr /><button onClick={() => void api.exportManifest()}><Download size={14} />导出台账</button><button onClick={() => void api.createBackup()}><Archive size={14} />完整备份</button>
-      </CommandMenu>
-      <span className="command-spacer" />
-      <button className="trash-button" title="打开应用回收站" onClick={() => void openTrashCenter()}><Trash2 size={16} />回收站{data.settings.trashCount > 0 && <span>{data.settings.trashCount > 99 ? "99+" : data.settings.trashCount}</span>}</button>
-      <button className={`notification-button ${unreadNotificationCount ? "has-alerts" : ""}`} title="打开通知中心" onClick={() => setNotificationCenterOpen(true)}><Bell size={16} />通知{unreadNotificationCount > 0 && <span>{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}</button>
-      <button onClick={openSettings}><Settings size={16} />设置</button>
-      <button onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}{previewOpen ? "隐藏预览" : "显示预览"}</button>
+      <div className="command-primary-actions" aria-label="资料操作">
+        <button className="primary" onClick={() => void chooseImport()}><Import size={16} />导入资料</button>
+        <button onClick={() => void chooseImportFolder()}><FolderInput size={16} />导入文件夹</button>
+        <button onClick={() => void addNode()}><FolderPlus size={16} />新建节点</button>
+        <button className="command-secondary-create" onClick={() => void addTag()}><Tags size={16} />新建标签</button>
+        <button className={activeTab.includeDescendants ? "scope-active" : ""} disabled={activeTab.view !== "files" || !activeTab.nodeId || Boolean(activeTab.tagId)} onClick={() => updateActive({ includeDescendants: !activeTab.includeDescendants })} title={activeTab.includeDescendants ? "恢复只显示当前节点直属文件" : "汇总当前节点及所有子节点的文件"}><Files size={16} />{activeTab.includeDescendants ? "仅看当前节点" : "查看全部文件"}</button>
+        <button disabled={activeTab.view === "settings"} onClick={() => void pasteAvailableClipboard()} title="支持应用内复制及资源管理器复制的文件"><ClipboardPaste size={16} />粘贴</button>
+      </div>
+      <div className="command-utility-actions" aria-label="更多操作">
+        <CommandMenu>
+          <button onClick={() => void renameCurrentNode()}>重命名当前节点</button><button onClick={() => void copyCurrentNode()}>复制当前节点及内容</button><button onClick={() => void moveCurrentNode()}>移动当前节点</button><button className="danger" onClick={() => void deleteCurrentNode()}>删除当前节点</button>
+          <hr /><button onClick={() => void api.exportManifest()}><Download size={14} />导出台账</button><button onClick={() => void api.createBackup()}><Archive size={14} />完整备份</button>
+        </CommandMenu>
+        <button className="trash-button" title="打开应用回收站" onClick={() => void openTrashCenter()}><Trash2 size={16} />回收站{data.settings.trashCount > 0 && <span>{data.settings.trashCount > 99 ? "99+" : data.settings.trashCount}</span>}</button>
+        <button className={`notification-button ${unreadNotificationCount ? "has-alerts" : ""}`} title="打开通知中心" onClick={() => setNotificationCenterOpen(true)}><Bell size={16} />通知{unreadNotificationCount > 0 && <span>{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}</button>
+        <button onClick={openSettings}><Settings size={16} />设置</button>
+        <button onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}{previewOpen ? "隐藏预览" : "显示预览"}</button>
+      </div>
     </section>
     {activeTab.view === "home" ? <HomeView data={data} expiryAlerts={expiryAlerts} recentDocuments={[...data.documents].sort((a, b) => Number(b.starred) - Number(a.starred) || b.modifiedAt - a.modifiedAt).slice(0, 10)} onOpenNode={selectNode} onOpenTag={selectTag} onOpenDocument={(document) => { const node = data.nodes.find((item) => item.id === document.nodeId); if (node) selectNode(node); setSelectedIds(new Set([document.id])); }} onTagMenu={(event, tag) => { event.stopPropagation(); setTagMenu({ x: event.clientX, y: event.clientY, documentIds: [], sourceTagId: tag.id }); }} /> : activeTab.view === "settings" ? <SettingsView vaultPath={data.vaultPath} settings={data.settings} previewOpen={previewOpen} notice={settingsNotice} appVersion={appVersion} updateUi={updateUi} onPreviewChange={setPreviewOpen} onCheckUpdate={() => checkForUpdates(true)} onInstallUpdate={installUpdate} onRevealVault={() => runAction(() => api.revealVault())} onBackup={() => runAction(async () => { await api.createBackup(); })} onSavePreferences={savePreferences} onRevealTrash={() => runAction(() => api.revealTrash())} onChangeTrash={() => runAction(async () => { const result = await api.changeTrashLocation(); if (result) { setSettingsNotice(result); await refreshBootstrap(); } })} onOpenTrash={() => void openTrashCenter()} onRequestEmptyVault={() => setDialog({ kind: "confirm", title: "使用空资料库？", description: "新位置将创建空资料库，现有资料仍完整保留在旧位置。切换将在重启后生效。", confirmLabel: "继续选择位置", onConfirm: () => void runAction(async () => { const result = await api.changeVaultLocation(false); if (result) setSettingsNotice(result); }) })} onChangeVault={() => runAction(async () => { const result = await api.changeVaultLocation(true); if (result) setSettingsNotice(result); })} /> : <section className={`workspace ${previewOpen ? "with-preview" : ""}`}>
       <aside className="sidebar custom-scrollbar">
@@ -1215,12 +1218,14 @@ function HomeView({ data, expiryAlerts, recentDocuments, onOpenNode, onOpenTag, 
       <div className="home-tree-controls"><button className="expand" onClick={() => setExpandedIds(new Set(data.nodes.map((node) => node.id)))}><ChevronDown size={15} /><span><strong>全部展开</strong><small>显示所有层级</small></span></button><button className="collapse" onClick={() => setExpandedIds(new Set())}><ChevronRight size={15} /><span><strong>全部收起</strong><small>仅保留根节点</small></span></button><label className="depth"><span><strong>展开层级</strong><small>指定可见深度</small></span><select value="" aria-label="展开至指定层级" onChange={(event) => { if (event.target.value) expandToDepth(Number(event.target.value)); }}><option value="" disabled>选择</option>{Array.from({ length: maxDepth + 1 }, (_, index) => <option value={index + 1} key={index + 1}>第 {index + 1} 层</option>)}</select></label></div>
       {root ? <HomeTreeNode node={root} nodes={data.nodes} onOpen={onOpenNode} expandedIds={expandedIds} onToggle={(nodeId) => setExpandedIds((current) => { const next = new Set(current); next.has(nodeId) ? next.delete(nodeId) : next.add(nodeId); return next; })} /> : <div className="home-tree-empty"><FolderPlus size={28} /><span>尚未创建台账根节点</span></div>}
     </div></section>
-    <section className="home-section expiry-overview-section"><header><h2>有效期关注</h2><span>集中查看已过期及 30 天内到期的资料</span></header><div className="expiry-overview-grid">
-      <ExpiryOverviewCard title="已过期" tone="expired" items={expired} onOpenDocument={onOpenDocument} />
-      <ExpiryOverviewCard title="即将到期" tone="due-soon" items={dueSoon} onOpenDocument={onOpenDocument} />
-    </div></section>
-    <section className="home-section"><header><h2>标签</h2><span>单击筛选，右侧按钮管理</span></header><div className="home-tags">{data.tags.map((tag) => <span className="home-tag-wrap" key={tag.id}><button className="home-tag" style={{ "--tag-color": tag.color } as CSSProperties} onClick={() => onOpenTag(tag)}><span className="tag-dot" style={{ background: tag.color }} />{tag.name}<small>{tag.documentCount}</small></button><button className="home-tag-menu" onClick={(event) => onTagMenu(event, tag)}><MoreHorizontal size={14} /></button></span>)}</div></section>
-    <section className="home-section"><header><h2>最近资料</h2><span>按修改时间排序</span></header><div className="recent-grid">{recentDocuments.map((document) => { const expiry = expiryState(document.expiresAt); return <button key={document.id} className={`recent-card ${expiry?.kind ?? ""}`} onClick={() => onOpenDocument(document)}><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>{formatDate(document.modifiedAt, true)} · {formatSize(document.size)}</small><span className="recent-tags">{document.tags.slice(0, 4).map((tag) => <i className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id}>{tag.name}</i>)}{expiry && <i className={`expiry-badge ${expiry.kind}`}>{expiry.label}</i>}</span></span></button>; })}</div></section>
+    <div className="home-support-grid">
+      <section className="home-section expiry-overview-section"><header><h2>有效期关注</h2><span>已过期与 30 天内到期</span></header><div className="expiry-overview-grid">
+        <ExpiryOverviewCard title="已过期" tone="expired" items={expired} onOpenDocument={onOpenDocument} />
+        <ExpiryOverviewCard title="即将到期" tone="due-soon" items={dueSoon} onOpenDocument={onOpenDocument} />
+      </div></section>
+      <section className="home-section home-recent-section"><header><h2>最近资料</h2><span>按修改时间排序</span></header><div className="recent-grid">{recentDocuments.map((document) => { const expiry = expiryState(document.expiresAt); return <button key={document.id} className={`recent-card ${expiry?.kind ?? ""}`} onClick={() => onOpenDocument(document)}><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>{formatDate(document.modifiedAt, true)} · {formatSize(document.size)}</small><span className="recent-tags">{document.tags.slice(0, 4).map((tag) => <i className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id}>{tag.name}</i>)}{expiry && <i className={`expiry-badge ${expiry.kind}`}>{expiry.label}</i>}</span></span></button>; })}</div></section>
+      <section className="home-section home-tags-section"><header><h2>标签</h2><span>选择标签筛选资料</span></header><div className="home-tags">{data.tags.map((tag) => <span className="home-tag-wrap" key={tag.id}><button className="home-tag" style={{ "--tag-color": tag.color } as CSSProperties} onClick={() => onOpenTag(tag)}><span className="tag-dot" style={{ background: tag.color }} />{tag.name}<small>{tag.documentCount}</small></button><button className="home-tag-menu" aria-label={`管理标签：${tag.name}`} onClick={(event) => onTagMenu(event, tag)}><MoreHorizontal size={14} /></button></span>)}</div></section>
+    </div>
   </section>;
 }
 
