@@ -66,6 +66,7 @@ export default function App() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(() => localStorage.getItem("document-ledger.preview-open") !== "false");
   const [loading, setLoading] = useState(true);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
   const [externalDragging, setExternalDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardState>(null);
@@ -91,6 +92,8 @@ export default function App() {
   const importInFlightRef = useRef(false);
   const recentExternalImportRef = useRef<{ key: string; at: number } | null>(null);
   const suppressPointerClickRef = useRef(false);
+  const documentRequestIdRef = useRef(0);
+  const documentLocationRef = useRef("");
 
   useEffect(() => {
     const preventBrowserZoom = (event: WheelEvent) => {
@@ -108,6 +111,8 @@ export default function App() {
   }, []);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const documentLocationKey = [activeTabId, activeTab.view, activeTab.nodeId ?? "", activeTab.tagId ?? "", String(activeTab.includeDescendants)].join("\u0000");
+  const documentQueryKey = [documentLocationKey, activeTab.query, ...searchTagIds].join("\u0000");
   const selectedDocuments = documents.filter((document) => selectedIds.has(document.id));
   const selected = selectedDocuments.length === 1 ? selectedDocuments[0] : null;
   const sortedDocuments = useMemo(() => [...documents].sort((a, b) => compareDocuments(a, b, sortKey, sortAscending)), [documents, sortAscending, sortKey]);
@@ -131,11 +136,21 @@ export default function App() {
   }, []);
 
   const refreshDocuments = useCallback(async (tab: AppTab) => {
-    const next = (await api.search(tab.query, tab.nodeId, tab.tagId, tab.includeDescendants))
-      .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
-    const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
-    setDocuments(filtered);
-    setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
+    if (tab.view !== "files") return;
+    const requestId = ++documentRequestIdRef.current;
+    setDocumentsLoading(true);
+    try {
+      const next = (await api.search(tab.query, tab.nodeId, tab.tagId, tab.includeDescendants))
+        .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
+      const filtered = searchTagIds.length ? next.filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId))) : next;
+      if (requestId !== documentRequestIdRef.current) return;
+      setDocuments(filtered);
+      setSelectedIds((current) => new Set([...current].filter((id) => filtered.some((item) => item.id === id))));
+    } catch (reason) {
+      if (requestId === documentRequestIdRef.current) setError(`读取资料失败：${String(reason)}`);
+    } finally {
+      if (requestId === documentRequestIdRef.current) setDocumentsLoading(false);
+    }
   }, [searchTagIds]);
 
   const refreshAll = useCallback(async () => {
@@ -208,9 +223,26 @@ export default function App() {
     })();
   }, [checkForUpdates]);
 
+  useLayoutEffect(() => {
+    documentRequestIdRef.current += 1;
+    const locationChanged = documentLocationRef.current !== documentLocationKey;
+    documentLocationRef.current = documentLocationKey;
+    if (activeTab.view !== "files") {
+      setDocumentsLoading(false);
+      return;
+    }
+    setDocumentsLoading(true);
+    if (locationChanged) {
+      const cached = data ? cachedDocumentsForTab(activeTab, data, searchTagIds) : null;
+      setDocuments(cached ?? []);
+      setSelectedIds(new Set());
+    }
+  }, [activeTab.view, data, documentLocationKey, documentQueryKey]);
+
   useEffect(() => {
-    if (!data) return;
-    const timer = window.setTimeout(() => void refreshDocuments(activeTab), 120);
+    if (!data || activeTab.view !== "files") return;
+    const delay = activeTab.query.trim() || searchTagIds.length ? 120 : 0;
+    const timer = window.setTimeout(() => void refreshDocuments(activeTab), delay);
     return () => window.clearTimeout(timer);
   }, [activeTab, data, refreshDocuments]);
 
@@ -1049,7 +1081,7 @@ export default function App() {
               <button className={`row-star ${document.starred ? "active" : ""}`} title={document.starred ? "取消星标" : "设为星标并置顶"} aria-label={document.starred ? `取消 ${document.name} 的星标` : `为 ${document.name} 设置星标`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void toggleDocumentStar(document); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={17} fill={document.starred ? "currentColor" : "none"} /></button>
             </div>;
           })}
-          {!documents.length && !visibleChildNodes.length && !loading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
+          {!documents.length && !visibleChildNodes.length && !loading && !documentsLoading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
         <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : activeTab.includeDescendants ? "（递归范围）" : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
       </section>
@@ -1074,7 +1106,7 @@ export default function App() {
       </div>) : <div className="notification-empty"><History size={30} /><strong>暂无历史通知</strong><span>临期或过期状态出现后会记录在这里</span></div>}</div>
       <footer>最多保留最近 200 条记录 · 已删除资料的通知会自动清理</footer>
     </aside></>}
-    {loading && <div className="progress-line" />}
+    {(loading || documentsLoading) && <div className="progress-line" />}
     {error && <div className="toast" onClick={() => setError(null)}>{error}<X size={14} /></div>}
   </main>;
 }
@@ -1209,9 +1241,11 @@ function HomeView({ data, expiryAlerts, recentDocuments, onOpenNode, onOpenTag, 
   const root = data.nodes.find((node) => node.parentId === null);
   const maxDepth = useMemo(() => Math.max(0, ...data.nodes.map((node) => nodeDepth(node, data.nodes))), [data.nodes]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(data.nodes.filter((node) => nodeDepth(node, data.nodes) < 2).map((node) => node.id)));
+  const [showAllTags, setShowAllTags] = useState(false);
   const expandToDepth = (depth: number) => setExpandedIds(new Set(data.nodes.filter((node) => nodeDepth(node, data.nodes) < depth).map((node) => node.id)));
   const expired = expiryAlerts.filter((item) => item.expiry.days < 0);
   const dueSoon = expiryAlerts.filter((item) => item.expiry.days >= 0);
+  const visibleTags = showAllTags ? data.tags : data.tags.slice(0, 8);
   return <section className="home-view custom-scrollbar">
     <div className="home-heading"><div><h1>EazyLedger</h1><p>从完整台账层级、有效期、标签或最近资料开始</p></div><div className="home-stats"><span><strong>{data.documents.length}</strong> 份资料</span><span><strong>{data.nodes.length - 1}</strong> 个节点</span><span><strong>{data.tags.length}</strong> 个标签</span></div></div>
     <section className="home-section"><header><h2>台账架构</h2><span>按层级浏览全部节点</span></header><div className="home-ledger-tree">
@@ -1224,7 +1258,7 @@ function HomeView({ data, expiryAlerts, recentDocuments, onOpenNode, onOpenTag, 
         <ExpiryOverviewCard title="即将到期" tone="due-soon" items={dueSoon} onOpenDocument={onOpenDocument} />
       </div></section>
       <section className="home-section home-recent-section"><header><h2>最近资料</h2><span>按修改时间排序</span></header><div className="recent-grid">{recentDocuments.map((document) => { const expiry = expiryState(document.expiresAt); return <button key={document.id} className={`recent-card ${expiry?.kind ?? ""}`} onClick={() => onOpenDocument(document)}><FileIcon extension={document.extension} /><span><strong>{document.name}</strong><small>{formatDate(document.modifiedAt, true)} · {formatSize(document.size)}</small><span className="recent-tags">{document.tags.slice(0, 4).map((tag) => <i className="tag-chip" style={{ "--tag-color": tag.color } as CSSProperties} key={tag.id}>{tag.name}</i>)}{expiry && <i className={`expiry-badge ${expiry.kind}`}>{expiry.label}</i>}</span></span></button>; })}</div></section>
-      <section className="home-section home-tags-section"><header><h2>标签</h2><span>选择标签筛选资料</span></header><div className="home-tags">{data.tags.map((tag) => <span className="home-tag-wrap" key={tag.id}><button className="home-tag" style={{ "--tag-color": tag.color } as CSSProperties} onClick={() => onOpenTag(tag)}><span className="tag-dot" style={{ background: tag.color }} />{tag.name}<small>{tag.documentCount}</small></button><button className="home-tag-menu" aria-label={`管理标签：${tag.name}`} onClick={(event) => onTagMenu(event, tag)}><MoreHorizontal size={14} /></button></span>)}</div></section>
+      <section className="home-section home-tags-section"><header><h2>标签</h2><span>{data.tags.length ? `${data.tags.length} 个 · 选择标签筛选资料` : "暂无标签"}</span></header><div className="home-tags">{visibleTags.map((tag) => <span className="home-tag-wrap" key={tag.id}><button className="home-tag" style={{ "--tag-color": tag.color } as CSSProperties} onClick={() => onOpenTag(tag)}><span className="tag-dot" style={{ background: tag.color }} />{tag.name}<small>{tag.documentCount}</small></button><button className="home-tag-menu" aria-label={`管理标签：${tag.name}`} onClick={(event) => onTagMenu(event, tag)}><MoreHorizontal size={14} /></button></span>)}{data.tags.length > 8 && <button className="home-tags-toggle" aria-expanded={showAllTags} onClick={() => setShowAllTags((expanded) => !expanded)}>{showAllTags ? "收起" : `全部标签 +${data.tags.length - visibleTags.length}`}<ChevronDown size={13} className={showAllTags ? "expanded" : ""} /></button>}</div></section>
     </div>
   </section>;
 }
@@ -1446,6 +1480,17 @@ function breadcrumbFor(nodeId: string | null, nodes: NodeItem[]) { if (!nodeId) 
 function nodePath(nodeId: string, nodes: NodeItem[]) { return breadcrumbFor(nodeId, nodes).map((node) => node.name).join(" / "); }
 function nodeDepth(node: NodeItem, nodes: NodeItem[]) { let depth = 0; let current = node; while (current.parentId) { depth += 1; const parent = nodes.find((candidate) => candidate.id === current.parentId); if (!parent) break; current = parent; } return depth; }
 function descendantNodeIds(nodeId: string, nodes: NodeItem[]) { const ids: string[] = []; const visit = (id: string) => nodes.filter((node) => node.parentId === id).forEach((child) => { ids.push(child.id); visit(child.id); }); visit(nodeId); return ids; }
+function cachedDocumentsForTab(tab: AppTab, data: BootstrapData, searchTagIds: string[]): DocumentItem[] | null {
+  if (tab.view !== "files" || tab.query.trim()) return null;
+  const nodeIds = tab.nodeId
+    ? new Set(tab.includeDescendants ? [tab.nodeId, ...descendantNodeIds(tab.nodeId, data.nodes)] : [tab.nodeId])
+    : null;
+  return data.documents
+    .filter((document) => !nodeIds || nodeIds.has(document.nodeId))
+    .filter((document) => !tab.tagId || document.tags.some((tag) => tag.id === tab.tagId))
+    .filter((document) => searchTagIds.every((tagId) => document.tags.some((tag) => tag.id === tagId)))
+    .map((document) => ({ ...document, tags: applyStoredTagOrder(document.tags) }));
+}
 function nodeOrderKey(parentId: string | null) { return parentId ?? "__root__"; }
 function readNodeOrder(): Record<string, string[]> {
   try { return JSON.parse(localStorage.getItem("document-ledger.node-order") ?? "{}"); }

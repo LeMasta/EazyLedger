@@ -1000,7 +1000,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .home-tags { gap: 6px; }
 .home-tag-wrap { border-color: #e0e3e9; border-radius: 7px; }
 .home-tag { height: 28px; }
-.home-tag-menu { height: 28px; border-left: 0; }
+.home-tag-menu { height: 28px; border-left: 0; opacity: 0; color: #7d8897; transition: opacity .12s ease; }
+.home-tag-wrap:hover .home-tag-menu, .home-tag-wrap:focus-within .home-tag-menu { opacity: 1; }
+.expiry-overview-grid { align-items: start; }
+.expiry-overview-card { align-self: start; }
+.home-tags { align-items: center; gap: 7px; }
+.home-tag-wrap { box-shadow: none; }
+.home-tag-wrap:hover, .home-tag-wrap:focus-within { border-color: color-mix(in srgb, var(--tag-color, #4f7cff) 35%, #dce2e9); box-shadow: 0 1px 3px rgba(31,41,55,.06); }
+.home-tags-toggle { height: 28px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; border: 1px dashed #d1d8e2; border-radius: 7px; background: transparent; color: #657286; font-size: 10px; cursor: pointer; }
+.home-tags-toggle:hover { border-color: #b8c8dc; background: #f7f9fc; color: #315e99; }
+.home-tags-toggle svg { transition: transform .15s ease; }
+.home-tags-toggle svg.expanded { transform: rotate(180deg); }
 
 .settings-view { padding-top: 20px; }
 .settings-heading { max-width: 900px; min-height: 50px; margin-bottom: 14px; gap: 9px; }
