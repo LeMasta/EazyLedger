@@ -988,7 +988,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .home-tree-icon { color: var(--ledger-accent); background: var(--ledger-accent-soft); }
 .home-support-grid { max-width: 1280px; margin: 0 auto; display: grid; grid-template-columns: minmax(250px, .8fr) minmax(360px, 1.2fr); align-items: start; gap: 0 24px; }
 .home-support-grid .home-section { min-width: 0; width: 100%; }
-.home-support-grid .home-tags-section { grid-column: 1 / -1; }
+.home-support-left { min-width: 0; display: flex; flex-direction: column; }
 .expiry-overview-grid { gap: 8px; }
 .expiry-overview-card, .recent-card { border-color: #e0e3e9; border-radius: 8px; box-shadow: none; }
 .expiry-overview-card { background: #fff; }
@@ -1047,7 +1047,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .command-primary-actions { flex-basis: 100%; }
   .command-utility-actions { width: 100%; margin-left: 0; justify-content: flex-end; }
   .home-support-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .home-support-grid .home-tags-section { grid-column: auto; }
 }
 
 @media (max-height: 760px) {
