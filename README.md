@@ -94,7 +94,7 @@ EazyLedger 适合管理合同、证书、产品资料、投标文件、人员资
 
 ## 开发运行
 
-开发环境需要 Node.js、Rust、Microsoft C++ Build Tools 和 WebView2。
+开发环境需要 Node.js、Rust 1.90 或更高版本、Microsoft C++ Build Tools 和 WebView2。
 
     npm install
     npm run build
