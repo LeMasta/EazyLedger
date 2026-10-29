@@ -1,0 +1,47 @@
+name: Windows Beta 安装包
+on:
+  push:
+    branches: [agent/v0.8.0]
+    paths-ignore: ['README.md']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - run: npm ci
+      - name: 验证测试版本
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '-beta\.\d+$') { throw '仅允许构建 Beta 版本' }
+          if ((Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -ne $version) { throw '版本不一致' }
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: EazyLedger v__VERSION__
+          releaseBody: |
+            Windows 测试安装包：文件剪贴板、指针样式、节点树定位、资源管理器定位与可选 Beta 更新。
+            待实机验证 PDF 复制和 Windows 文件定位。请先备份资料库。
+          releaseDraft: true
+          prerelease: true
+          updaterJsonPreferNsis: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EazyLedger-Windows-Beta
+          path: src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
