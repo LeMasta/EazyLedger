@@ -420,11 +420,11 @@ button.tag-chip:hover { background: color-mix(in srgb, var(--tag-color) 27%, whi
 
 
 /* v0.4.5: pointer-driven internal drag/drop and expanded tag palette */
-.file-row { cursor: grab; touch-action: none; }
-.file-row:active { cursor: grabbing; }
+.file-row { cursor: default; }
+.file-row:active { cursor: default; }
 .file-row.dragging { opacity: .55; outline: 1px dashed #5c91dd; }
-.tree-row { cursor: grab; touch-action: none; }
-.tree-row:active { cursor: grabbing; }
+.tree-row { cursor: default; }
+.tree-row:active { cursor: default; }
 .tree-row.node-dragging { opacity: .45; }
 .tree-row.drop-target.node-target::after { content: "设为下级"; }
 .tree-row.drop-target.files-target::after { content: "移动文件到这里"; }

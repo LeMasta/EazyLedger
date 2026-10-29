@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { acceptsBetaUpdates, setAcceptsBetaUpdates } from "./updater";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { renderAsync } from "docx-preview";
@@ -1291,7 +1292,9 @@ function TrashCenter({ items, path, onClose, onReveal, onRestore, onDelete, onEm
 }
 
 function SettingsView({ vaultPath, settings, previewOpen, notice, appVersion, updateUi, onPreviewChange, onCheckUpdate, onInstallUpdate, onRevealVault, onBackup, onSavePreferences, onRevealTrash, onChangeTrash, onOpenTrash, onRequestEmptyVault, onChangeVault }: { vaultPath: string; settings: BootstrapData["settings"]; previewOpen: boolean; notice: string | null; appVersion: string; updateUi: UpdateUiState; onPreviewChange: (value: boolean) => void; onCheckUpdate: () => Promise<void>; onInstallUpdate: () => Promise<void>; onRevealVault: () => Promise<void>; onBackup: () => Promise<void>; onSavePreferences: (mode: DeleteMode, limit: number) => Promise<void>; onRevealTrash: () => Promise<void>; onChangeTrash: () => Promise<void>; onOpenTrash: () => void; onRequestEmptyVault: () => void; onChangeVault: () => Promise<void> }) {
+  const [acceptBeta, setAcceptBeta] = useState(acceptsBetaUpdates);
   return <section className="settings-view custom-scrollbar"><div className="settings-heading"><Settings size={28} /><div><h1>设置</h1><p>调整资料库、界面和文件管理行为</p></div></div>
+    <details className="settings-group"><summary>高级</summary><label className="setting-row"><div><strong>接受 Beta 更新</strong><small>加入测试版更新检查；关闭后只接收正式版，不会自动降级。</small></div><input type="checkbox" checked={acceptBeta} disabled={updateUi.phase === "checking" || updateUi.phase === "downloading"} onChange={(event) => { const value = event.target.checked; setAcceptsBetaUpdates(value); setAcceptBeta(value); void onCheckUpdate(); }} /></label></details>
     {notice && <div className="settings-notice"><Check size={18} /><span>{notice}</span></div>}
     <section className="settings-group"><header><Database size={19} /><div><h2>资料库存放位置</h2><p>数据库、导入副本和预览缓存</p></div></header><div className="setting-row vertical"><div><strong>当前资料库</strong><code title={vaultPath}>{vaultPath}</code></div><div className="setting-actions"><button onClick={() => void onRevealVault()}><FolderOpen size={14} />打开资料库文件夹</button><button className="secondary" onClick={() => void onBackup()}><Archive size={14} />创建完整备份</button><button className="secondary" onClick={() => void onChangeVault()}>迁移到新位置</button><button className="secondary" onClick={onRequestEmptyVault}>使用空资料库</button></div><small>切换会在重启应用后生效；旧资料库不会自动删除。</small></div></section>
     <section className="settings-group"><header><PanelRightOpen size={19} /><div><h2>界面</h2><p>控制文件浏览视图的默认呈现</p></div></header><label className="setting-row"><div><strong>显示预览面板</strong><small>单选文件时在右侧显示基础预览和属性</small></div><input type="checkbox" checked={previewOpen} onChange={(event) => onPreviewChange(event.target.checked)} /></label><label className="setting-row"><div><strong>每行显示标签数</strong><small>超出上限的标签折叠为“+N”，文件名始终优先显示</small></div><select value={settings.tagDisplayLimit} onChange={(event) => void onSavePreferences(settings.deleteMode, Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option value={index + 1} key={index + 1}>{index + 1} 个</option>)}</select></label></section>
@@ -1339,6 +1342,15 @@ function Tree({ nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePoin
 function TreeNode({ node, nodes, selectedId, pointerDrag, dropTarget, onSelect, onNodePointerDown, onContextMenu, depth }: { node: NodeItem; nodes: NodeItem[]; selectedId: string | null; pointerDrag: PointerDragState | null; dropTarget: PointerDropTarget | null; onSelect: (node: NodeItem) => void; onNodePointerDown: (event: ReactPointerEvent, node: NodeItem) => void; onContextMenu: (menu: NodeMenuState) => void; depth: number }) {
   const children = nodes.filter((candidate) => candidate.parentId === node.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const [open, setOpen] = useState(depth < 2);
+  useEffect(() => {
+    let current = nodes.find((item) => item.id === selectedId);
+    const visited = new Set<string>();
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      if (current.id === node.id) { setOpen(true); break; }
+      current = nodes.find((item) => item.id === current!.parentId);
+    }
+  }, [selectedId, nodes, node.id]);
   const isDropTarget = Boolean(pointerDrag && dropTarget?.nodeId === node.id);
   const isDraggedNode = pointerDrag?.kind === "node" && pointerDrag.nodeId === node.id;
   useEffect(() => {

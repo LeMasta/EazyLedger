@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
 use clipboard_win::{formats, Clipboard, Format, Getter, Setter};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -214,6 +216,7 @@ pub fn run() {
             import_clipboard_files,
             document_paths,
             copy_documents_to_clipboard,
+            check_preview_update,
             open_document,
             reveal_document,
             reveal_vault,
@@ -522,8 +525,33 @@ fn document_paths(ids: Vec<String>, state: State<AppState>) -> Result<Vec<String
 }
 
 #[tauri::command]
-fn copy_documents_to_clipboard(ids: Vec<String>, state: State<AppState>) -> Result<usize, String> {
+async fn copy_documents_to_clipboard(ids: Vec<String>, state: State<'_, AppState>) -> Result<usize, String> {
     let paths = document_paths(ids, state)?;
+    tauri::async_runtime::spawn_blocking(move || write_file_clipboard(paths))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn check_preview_update(webview: tauri::Webview, tag: String) -> Result<Option<serde_json::Value>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    if !tag.starts_with('v') || !tag.contains("-beta.") || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err("无效的测试版本标签".into());
+    }
+    let endpoint = format!("https://github.com/LeMasta/EazyLedger/releases/download/{tag}/latest.json");
+    let updater = webview.updater_builder()
+        .endpoints(vec![endpoint.parse().map_err(|e| format!("{e}"))?]).map_err(|e| e.to_string())?
+        .timeout(Duration::from_secs(8)).build().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    Ok(update.map(|update| {
+        let metadata = serde_json::json!({"currentVersion": update.current_version, "version": update.version, "body": update.body, "date": null, "rawJson": update.raw_json});
+        let rid = webview.resources_table().add(update);
+        let mut metadata = metadata;
+        metadata["rid"] = serde_json::json!(rid);
+        metadata
+    }))
+}
+
+fn write_file_clipboard(paths: Vec<String>) -> Result<usize, String> {
     if paths.is_empty() { return Ok(0); }
 
     #[cfg(target_os = "windows")]
@@ -685,9 +713,8 @@ fn reveal_document(id: String, state: State<AppState>) -> Result<(), String> {
     let path = document_path(&id, &state.vault_path)?;
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .arg("/select,")
-            .arg(&path)
+        Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
             .spawn()
             .map_err(|error| error.to_string())?;
     }
@@ -1557,7 +1584,8 @@ fn descendant_ids(node_id: &str, nodes: &[NodeItem]) -> HashSet<String> {
 fn document_path(id: &str, vault: &Path) -> Result<PathBuf, String> {
     let connection = open_db(vault)?;
     let relative: String = connection.query_row("SELECT relative_path FROM documents WHERE id=?1", [id], |row| row.get(0)).map_err(|_| "文件记录不存在".to_string())?;
-    let path = vault.join(relative);
+    // Imported records use portable separators; Windows shell consumers require native paths.
+    let path = vault.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
     if !path.exists() { return Err("资料文件已丢失，请检查资料库".into()); }
     Ok(path)
 }
