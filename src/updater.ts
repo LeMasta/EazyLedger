@@ -1,6 +1,11 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, Update } from "@tauri-apps/plugin-updater";
+import { invoke } from "@tauri-apps/api/core";
+
+const BETA_KEY = "eazyledger.update.accept-beta";
+export const acceptsBetaUpdates = () => localStorage.getItem(BETA_KEY) === "true";
+export function setAcceptsBetaUpdates(value: boolean) { localStorage.setItem(BETA_KEY, String(value)); pendingUpdate = null; }
 
 export type AvailableUpdate = {
   version: string;
@@ -49,7 +54,11 @@ function compareVersions(left: string, right: string): number {
     const difference = (a[index] ?? 0) - (b[index] ?? 0);
     if (difference) return difference;
   }
-  return 0;
+  const ap = left.split("-")[1];
+  const bp = right.split("-")[1];
+  if (!ap && bp) return 1;
+  if (ap && !bp) return -1;
+  return (Number(ap?.split(".")[1]) || 0) - (Number(bp?.split(".")[1]) || 0);
 }
 
 async function fetchPublishedVersion(): Promise<string> {
@@ -97,6 +106,16 @@ async function performUpdateCheck(): Promise<Awaited<ReturnType<typeof check>>> 
 export async function findUpdate(): Promise<AvailableUpdate | null> {
   if (!activeCheck) activeCheck = performUpdateCheck().finally(() => { activeCheck = null; });
   pendingUpdate = await activeCheck;
+  if (acceptsBetaUpdates()) {
+    const response = await fetch("https://api.github.com/repos/LeMasta/EazyLedger/releases?per_page=100", { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error(`测试版查询失败（${response.status}）`);
+    const releases = await response.json() as { draft: boolean; prerelease: boolean; tag_name: string; assets: { name: string }[] }[];
+    const candidate = releases.find((release) => !release.draft && release.prerelease && release.tag_name.includes("-beta.") && release.assets.some((asset) => asset.name === "latest.json"));
+    if (candidate && compareVersions(candidate.tag_name.slice(1), pendingUpdate?.version ?? await getVersion()) > 0) {
+      const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>("check_preview_update", { tag: candidate.tag_name });
+      if (metadata) { await pendingUpdate?.close(); pendingUpdate = new Update(metadata); }
+    }
+  }
   if (!pendingUpdate) return null;
   return {
     version: pendingUpdate.version,
