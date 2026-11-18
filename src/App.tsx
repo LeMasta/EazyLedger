@@ -91,6 +91,8 @@ export default function App() {
   const pointerDragRef = useRef<PointerDragState | null>(null);
   const nativeDraggedIdsRef = useRef<string[] | null>(null);
   const importInFlightRef = useRef(false);
+  const copyInFlightRef = useRef(false);
+  const [copyNotice, setCopyNotice] = useState("");
   const recentExternalImportRef = useRef<{ key: string; at: number } | null>(null);
   const suppressPointerClickRef = useRef(false);
   const documentRequestIdRef = useRef(0);
@@ -661,13 +663,20 @@ export default function App() {
   }
 
   async function copyFilesToClipboard(ids: string[]) {
-    setClipboard({ mode: "copy", ids });
-    if (!api.isDesktop) return;
+    if (!ids.length || copyInFlightRef.current) return;
+    if (!api.isDesktop) { setClipboard({ mode: "copy", ids }); return; }
+    copyInFlightRef.current = true;
+    setCopyNotice("正在复制…");
     try {
       const count = await api.copyDocumentsToClipboard(ids);
-      if (!count) setError("没有可复制的资料");
+      if (!count) { setCopyNotice("没有可复制的资料"); return; }
+      setClipboard({ mode: "copy", ids });
+      setCopyNotice(`已复制 ${count} 个文件，可粘贴到资源管理器`);
     } catch (reason) {
-      setError(`无法复制到 Windows 文件剪贴板：${String(reason)}`);
+      setClipboard(null);
+      setCopyNotice(`复制失败：${String(reason)}`);
+    } finally {
+      copyInFlightRef.current = false;
     }
   }
 
@@ -1084,7 +1093,7 @@ export default function App() {
           })}
           {!documents.length && !visibleChildNodes.length && !loading && !documentsLoading && <div className="empty-state"><FilePlus2 size={38} /><h3>这里还没有资料</h3><p>将文件或文件夹拖到窗口中，目录层级会自动保留。</p></div>}
         </div>
-        <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : activeTab.includeDescendants ? "（递归范围）" : ""}</span><span>{selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除"}</span></footer>
+        <footer className="statusbar"><span>{visibleChildNodes.length + documents.length} 个项目{visibleChildNodes.length ? `（${visibleChildNodes.length} 个文件夹）` : activeTab.includeDescendants ? "（递归范围）" : ""}</span><span role="status" aria-live="polite">{copyNotice || (selectedIds.size ? `已选择 ${selectedIds.size} 个项目` : "Ctrl+A 全选 · F2 重命名 · Delete 删除")}</span></footer>
       </section>
       {previewOpen && <PreviewPane document={selected} preview={preview} allTags={data.tags} onChanged={refreshAll} />}
     </section>}

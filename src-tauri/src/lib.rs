@@ -525,9 +525,13 @@ fn document_paths(ids: Vec<String>, state: State<AppState>) -> Result<Vec<String
 }
 
 #[tauri::command]
-async fn copy_documents_to_clipboard(ids: Vec<String>, state: State<'_, AppState>) -> Result<usize, String> {
+async fn copy_documents_to_clipboard(ids: Vec<String>, window: tauri::WebviewWindow, state: State<'_, AppState>) -> Result<usize, String> {
     let paths = document_paths(ids, state)?;
-    tauri::async_runtime::spawn_blocking(move || write_file_clipboard(paths))
+    #[cfg(target_os = "windows")]
+    let owner = window.hwnd().map_err(|error| error.to_string())?.0 as usize;
+    #[cfg(not(target_os = "windows"))]
+    let owner = 0usize;
+    tauri::async_runtime::spawn_blocking(move || write_file_clipboard(paths, owner))
         .await.map_err(|error| error.to_string())?
 }
 
@@ -551,16 +555,26 @@ async fn check_preview_update(webview: tauri::Webview, tag: String) -> Result<Op
     }))
 }
 
-fn write_file_clipboard(paths: Vec<String>) -> Result<usize, String> {
+fn write_file_clipboard(paths: Vec<String>, owner: usize) -> Result<usize, String> {
     if paths.is_empty() { return Ok(0); }
 
     #[cfg(target_os = "windows")]
     {
-        let _clipboard = Clipboard::new_attempts(10)
-            .map_err(|error| format!("无法打开 Windows 文件剪贴板：{error}"))?;
-        formats::FileList
-            .write_clipboard(paths.as_slice())
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let _clipboard = loop {
+            match Clipboard::new_for(owner as clipboard_win::types::HWND) {
+                Ok(clipboard) => break clipboard,
+                Err(error) if Instant::now() >= deadline => return Err(format!("剪贴板持续被占用，请稍后再按 Ctrl+C：{error}")),
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        clipboard_win::raw::empty().map_err(|error| format!("无法清理旧剪贴板格式：{error}"))?;
+        formats::FileList.write_clipboard(paths.as_slice())
             .map_err(|error| format!("无法写入 Windows 文件剪贴板：{error}"))?;
+        let mut actual: Vec<String> = Vec::new();
+        formats::FileList.read_clipboard(&mut actual)
+            .map_err(|error| format!("无法验证文件剪贴板：{error}"))?;
+        if actual != paths { return Err("文件剪贴板校验失败，请重新复制".into()); }
     }
     #[cfg(not(target_os = "windows"))]
     return Err("当前系统暂不支持文件剪贴板导出".into());
